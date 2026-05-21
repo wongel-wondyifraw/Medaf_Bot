@@ -99,6 +99,9 @@ bot.on('text', async (ctx) => {
     if (!product.inStock) {
       lines.push('Stock: OUT OF STOCK');
     }
+    if (product.source) {
+      lines.push(`Source: ${product.source}`);
+    }
     lines.push(`Selling price (+${margin}%): ${sellingPrice}${currencySuffix}`);
     lines.push(`Profit: ${profit}${currencySuffix}`);
 
@@ -107,7 +110,7 @@ bot.on('text', async (ctx) => {
     logError('scrape', err, { url, chatId: ctx.chat.id });
 
     const userMessage = isNetworkError(err)
-      ? 'Network error reaching SearchAPI. Make sure your VPN/proxy is working and try again.'
+      ? 'Network error reaching the scraping provider. Make sure your internet/VPN/proxy is working and try again.'
       : `Sorry, I could not process that link.\n${err.message}`;
 
     await ctx.reply(userMessage).catch((replyErr) => logError('reply', replyErr));

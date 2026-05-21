@@ -182,3 +182,154 @@ FetchError: request to https://api.telegram.org/bot8777765313:[REDACTED]/getMe f
     at emitErrorCloseNT (node:internal/streams/destroy:129:3)
     at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
 ---
+[2026-05-21T11:28:57.568Z] [scrape] SearchAPI is currently down for all Shein storefronts (HTTP 503). This is an outage on SearchAPI.io, not in the bot. Try again later or email support@searchapi.io.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+{"url":"https://us.shein.com/Tween-Girls-Letter-Print-Short-Sleeve-Tee-Fitted-Flare-Pants-Sets-p-66964550.html?src_identifier=on%3DCATEGORY_RECOMMEND_COMPONENT%60cn%3DCATEGORY_RECOMMEND_COMPONENT_1%60hz%3D-%60jc%3Dreal_2031%60ps%3D2_1_3&src_module=all&src_tab_page_id=page_home1779362386486&mallCode=1&pageListType=4","chatId":1041346091}
+Error: SearchAPI is currently down for all Shein storefronts (HTTP 503). This is an outage on SearchAPI.io, not in the bot. Try again later or email support@searchapi.io.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+    at scrapeProduct (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\scraper.js:305:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\bot.js:86:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+---
+[2026-05-21T11:40:14.568Z] [telegraf] Promise timed out after 60000 milliseconds
+{"updateId":14634865}
+TimeoutError: Promise timed out after 60000 milliseconds
+    at Timeout._onTimeout (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\p-timeout\index.js:39:64)
+    at listOnTimeout (node:internal/timers:605:17)
+    at process.processTimers (node:internal/timers:541:7)
+---
+[2026-05-21T11:40:39.867Z] [scrape] All scraping providers failed.
+- ScraperAPI: ScraperAPI account is out of credits (403). Top up at scraperapi.com.
+- SearchAPI: SearchAPI is currently down for all Shein storefronts (HTTP 503). This is an outage on SearchAPI.io, not in the bot. Try again later or email support@searchapi.io.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+{"url":"https://us.shein.com/Tween-Girls-Letter-Print-Short-Sleeve-Tee-Fitted-Flare-Pants-Sets-p-66964550.html?src_identifier=on%3DCATEGORY_RECOMMEND_COMPONENT%60cn%3DCATEGORY_RECOMMEND_COMPONENT_1%60hz%3D-%60jc%3Dreal_2031%60ps%3D2_1_3&src_module=all&src_tab_page_id=page_home1779362386486&mallCode=1&pageListType=4","chatId":1041346091}
+Error: All scraping providers failed.
+- ScraperAPI: ScraperAPI account is out of credits (403). Top up at scraperapi.com.
+- SearchAPI: SearchAPI is currently down for all Shein storefronts (HTTP 503). This is an outage on SearchAPI.io, not in the bot. Try again later or email support@searchapi.io.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+    at scrapeProduct (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\scraper.js:370:9)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\bot.js:86:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+---
+[2026-05-21T11:42:31.198Z] [scrape] All scraping providers failed.
+- ScraperAPI: ScraperAPI account is out of credits (403). Top up at scraperapi.com.
+- SearchAPI: SearchAPI could not return this product from any supported storefront.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: HTTP 500 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+{"url":"https://us.shein.com/Tween-Girls-Letter-Print-Short-Sleeve-Tee-Fitted-Flare-Pants-Sets-p-66964550.html?src_identifier=on%3DCATEGORY_RECOMMEND_COMPONENT%60cn%3DCATEGORY_RECOMMEND_COMPONENT_1%60hz%3D-%60jc%3Dreal_2031%60ps%3D2_1_3&src_module=all&src_tab_page_id=page_home1779362386486&mallCode=1&pageListType=4","chatId":1041346091}
+Error: All scraping providers failed.
+- ScraperAPI: ScraperAPI account is out of credits (403). Top up at scraperapi.com.
+- SearchAPI: SearchAPI could not return this product from any supported storefront.
+Attempts:
+  - us.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - eur.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - de.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - fr.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - it.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - es.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pt.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - pl.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - roe.shein.com: HTTP 500 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.co.uk: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - www.shein.se: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+  - ch.shein.com: 503 Internal SearchAPI error. Please contact support at support@searchapi.io or via live chat.
+    at scrapeProduct (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\scraper.js:370:9)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\src\bot.js:86:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+    at async C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:519:21
+    at async execute (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\composer.js:518:17)
+---
+[2026-05-21T11:48:36.654Z] [launch] [409] 409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+Error: 409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+    at Telegram.callApi (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\client.js:315:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async [Symbol.asyncIterator] (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\polling.js:30:33)
+    at async Polling.loop (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\polling.js:73:30)
+    at async Telegraf.launch (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\telegraf.js:194:13)
+---
+[2026-05-21T11:49:50.227Z] [launch] [409] 409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+Error: 409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+    at Telegram.callApi (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\client.js:315:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async [Symbol.asyncIterator] (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\polling.js:30:33)
+    at async Polling.loop (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\core\network\polling.js:73:30)
+    at async Telegraf.launch (C:\Users\Wongel.Wondyifraw\Documents\Shain bot\node_modules\telegraf\lib\telegraf.js:194:13)
+---
