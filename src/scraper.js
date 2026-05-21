@@ -1,4 +1,6 @@
 const axios = require('axios');
+const { scrapeWithScraperApi } = require('./scraperapi');
+const { scrapeWithRetailed } = require('./retailed');
 
 const SEARCHAPI_BASE = 'https://www.searchapi.io/api/v1/search';
 
@@ -217,7 +219,7 @@ function shouldTryNextDomain(err) {
   );
 }
 
-async function scrapeProduct(url) {
+async function scrapeWithSearchApi(url) {
   const apiKey = process.env.SEARCHAPI_KEY;
   if (!apiKey) {
     throw new Error('SEARCHAPI_KEY is missing from .env. Get a key at https://www.searchapi.io and paste it in.');
@@ -334,7 +336,54 @@ async function scrapeProduct(url) {
     image: product.main_image || (product.images && product.images[0]) || null,
     productId,
     domain: usedDomain,
+    source: 'searchapi',
   };
 }
 
-module.exports = { scrapeProduct, parseShein };
+const PROVIDERS = {
+  scraperapi: { fn: scrapeWithScraperApi, envKey: 'SCRAPERAPI_KEY', label: 'ScraperAPI' },
+  retailed: { fn: scrapeWithRetailed, envKey: 'RETAILED_API_KEY', label: 'Retailed.io' },
+  searchapi: { fn: scrapeWithSearchApi, envKey: 'SEARCHAPI_KEY', label: 'SearchAPI' },
+};
+
+function resolveProviderOrder() {
+  const requested = (process.env.PROVIDER_ORDER || 'scraperapi,retailed,searchapi')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const order = [];
+  for (const name of requested) {
+    const provider = PROVIDERS[name];
+    if (!provider) continue;
+    if (!process.env[provider.envKey]) continue;
+    order.push({ name, ...provider });
+  }
+  return order;
+}
+
+async function scrapeProduct(url) {
+  parseShein(url);
+
+  const order = resolveProviderOrder();
+  if (order.length === 0) {
+    throw new Error(
+      'No scraping provider configured. Add at least one of: SCRAPERAPI_KEY, RETAILED_API_KEY, SEARCHAPI_KEY to .env.',
+    );
+  }
+
+  const errors = [];
+  for (const provider of order) {
+    try {
+      return await provider.fn(url);
+    } catch (err) {
+      errors.push(`${provider.label}: ${err.message}`);
+    }
+  }
+
+  throw new Error(
+    `All scraping providers failed.\n${errors.map((line) => '- ' + line).join('\n')}`,
+  );
+}
+
+module.exports = { scrapeProduct, parseShein, scrapeWithSearchApi };
