@@ -5,17 +5,21 @@ import { AppConfig } from '../config/configuration';
 import { CalculatorModule } from '../calculator/calculator.module';
 import { FileLoggerService } from '../common/logger.service';
 import { buildAgent } from '../common/proxy';
+import { AdminsModule } from '../admins/admins.module';
 import { OrdersModule } from '../orders/orders.module';
 import { ResellersModule } from '../resellers/resellers.module';
 import { ScraperModule } from '../scraper/scraper.module';
+import { SettingsModule } from '../settings/settings.module';
 import { BotUpdate } from './bot.update';
 
 @Module({
   imports: [
     ResellersModule,
     OrdersModule,
+    AdminsModule,
     ScraperModule,
     CalculatorModule,
+    SettingsModule,
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

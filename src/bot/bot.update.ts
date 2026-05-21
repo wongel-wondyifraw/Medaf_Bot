@@ -1,11 +1,19 @@
 import { Logger } from '@nestjs/common';
-import { Action, Ctx, On, Start, Update } from 'nestjs-telegraf';
+import { ConfigService } from '@nestjs/config';
+import { Action, Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
 import { Context, Markup } from 'telegraf';
+import { AdminsService } from '../admins/admins.service';
+import {
+  AdminAuthStateService,
+  PendingAction,
+} from '../admins/admin-auth-state.service';
 import { CalculatorService } from '../calculator/calculator.service';
 import { FileLoggerService } from '../common/logger.service';
+import { AppConfig } from '../config/configuration';
 import { OrdersService } from '../orders/orders.service';
 import { ResellersService } from '../resellers/resellers.service';
 import { ScraperService } from '../scraper/scraper.service';
+import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 
 @Update()
 export class BotUpdate {
@@ -14,9 +22,13 @@ export class BotUpdate {
   constructor(
     private readonly resellers: ResellersService,
     private readonly orders: OrdersService,
+    private readonly admins: AdminsService,
+    private readonly adminAuth: AdminAuthStateService,
     private readonly scraper: ScraperService,
     private readonly calculator: CalculatorService,
+    private readonly settings: SettingsService,
     private readonly fileLogger: FileLoggerService,
+    private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
   private async ensureReseller(ctx: Context) {
@@ -47,6 +59,8 @@ export class BotUpdate {
 
   @Start()
   async onStart(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (from) this.adminAuth.clearPending(from.id);
     const reseller = await this.ensureReseller(ctx);
     if (!reseller) return;
     if (reseller.isRegistered()) {
@@ -63,6 +77,47 @@ export class BotUpdate {
     } else {
       await ctx.reply('You are all set. Send a Shein product link.');
     }
+  }
+
+  @Command('admin')
+  async onAdminCommand(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+
+    if (await this.admins.isAdmin(from.id)) {
+      await this.sendAdminMenu(ctx);
+      return;
+    }
+
+    const password = this.config.get('adminPassword', { infer: true });
+    if (!password) {
+      await ctx.reply('Admin access is not configured on this bot.');
+      return;
+    }
+
+    this.adminAuth.setPending(from.id, 'admin-grant');
+    await ctx.reply('🔐 Admin access\n\nEnter the admin password:');
+  }
+
+  @Command('notadmin')
+  async onNotAdminCommand(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+
+    const isAdmin = await this.admins.isAdmin(from.id);
+    if (!isAdmin) {
+      await ctx.reply('You are not an admin.');
+      return;
+    }
+
+    const password = this.config.get('adminPassword', { infer: true });
+    if (!password) {
+      await ctx.reply('Admin access is not configured on this bot.');
+      return;
+    }
+
+    this.adminAuth.setPending(from.id, 'admin-revoke');
+    await ctx.reply('🔓 Revoke admin access\n\nEnter the admin password to confirm:');
   }
 
   @On('contact')
@@ -97,6 +152,12 @@ export class BotUpdate {
     if (!from || !message?.text) return;
     const text = message.text.trim();
 
+    const pending = this.adminAuth.getPending(from.id);
+    if (pending) {
+      await this.handlePendingAction(ctx, from.id, from.username, pending, text);
+      return;
+    }
+
     const reseller = await this.ensureReseller(ctx);
     if (!reseller) return;
 
@@ -123,7 +184,7 @@ export class BotUpdate {
     try {
       await ctx.reply('Fetching product details, please wait...');
       const product = await this.scraper.scrapeProduct(text);
-      const totals = this.calculator.calculateOrderTotalEtb(product);
+      const totals = await this.calculator.calculateOrderTotalEtb(product);
       const body = `${product.title}\n\nPrice: ${this.calculator.formatEtb(totals.totalEtb)}`;
       const keyboard = Markup.inlineKeyboard([
         Markup.button.callback('🛒 Order', `order:${product.productId || 'na'}`),
@@ -240,6 +301,602 @@ export class BotUpdate {
     }
   }
 
+  @Action('admin:report')
+  async onAdminReport(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Loading report...', false);
+    try {
+      const report = await this.orders.getReport();
+      await ctx.editMessageText(this.buildReportMessage(report), {
+        parse_mode: 'HTML',
+        ...this.adminMenuKeyboard(),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminReport', err);
+    }
+  }
+
+  @Action('admin:settings')
+  async onAdminSettings(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Loading settings...', false);
+    try {
+      const body = await this.buildSettingsMessage();
+      await ctx.editMessageText(body, {
+        parse_mode: 'HTML',
+        ...(await this.buildSettingsKeyboard()),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminSettings', err);
+    }
+  }
+
+  @Action('admin:edit:margin')
+  async onEditMargin(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-margin');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter new profit margin (%), e.g. 30:');
+  }
+
+  @Action('admin:edit:delivery')
+  async onEditDelivery(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-delivery');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter new delivery fee (ETB), e.g. 500:');
+  }
+
+  @Action('admin:edit:rate')
+  async onEditRate(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-rate');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter new USD → ETB rate, e.g. 165:');
+  }
+
+  @Action('admin:add')
+  async onAddAdmin(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'add-admin');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(
+      'Send the Telegram user ID to grant admin access.\n' +
+        '(They can find it by messaging @userinfobot)',
+    );
+  }
+
+  @Action(/^admin:remove:(\d+)$/)
+  async onRemoveAdmin(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const targetId = match?.[1];
+    if (!targetId) {
+      await this.safeAnswer(ctx, 'Invalid admin.', true);
+      return;
+    }
+
+    if (String(from.id) === targetId) {
+      await this.safeAnswer(
+        ctx,
+        'Use /notadmin to revoke your own access.',
+        true,
+      );
+      return;
+    }
+
+    const removed = await this.admins.deleteByTelegramId(targetId);
+    if (!removed) {
+      await this.safeAnswer(ctx, 'Admin not found.', true);
+      return;
+    }
+
+    this.logger.log(`Admin ${targetId} removed by telegramId=${from.id}`);
+    await this.safeAnswer(ctx, `Admin ${targetId} removed.`, false);
+
+    try {
+      const body = await this.buildSettingsMessage();
+      await ctx.editMessageText(body, {
+        parse_mode: 'HTML',
+        ...(await this.buildSettingsKeyboard()),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminRemove', err);
+    }
+  }
+
+  @Action('admin:pending')
+  async onAdminPending(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Loading pending orders...', false);
+    try {
+      const pending = await this.orders.findPending();
+      await ctx.editMessageText(this.buildPendingMessage(pending), {
+        parse_mode: 'HTML',
+        ...this.pendingKeyboard(pending),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminPending', err);
+    }
+  }
+
+  @Action(/^admin:done:(\d+)$/)
+  async onAdminMarkDone(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+      if (order.status === 'cancelled') {
+        await this.safeAnswer(ctx, 'That order was cancelled and cannot be marked done.', true);
+        return;
+      }
+      if (order.status === 'completed') {
+        await this.safeAnswer(ctx, `Order #${orderId} was already marked done.`, false);
+      } else {
+        await this.orders.markCompleted(orderId);
+        const from = ctx.from;
+        this.logger.log(
+          `Order #${orderId} marked completed by admin telegramId=${from?.id}`,
+        );
+        await this.safeAnswer(ctx, `✓ Order #${orderId} marked done.`, false);
+      }
+
+      const pending = await this.orders.findPending();
+      try {
+        await ctx.editMessageText(this.buildPendingMessage(pending), {
+          parse_mode: 'HTML',
+          ...this.pendingKeyboard(pending),
+        });
+      } catch (err) {
+        if (this.isMessageNotModifiedError(err)) return;
+        throw err;
+      }
+    } catch (err) {
+      this.fileLogger.logError('adminMarkDone', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not mark order done. Please try again.', true);
+    }
+  }
+
+  @Action('admin:menu')
+  async onAdminMenu(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Menu', false);
+    try {
+      await ctx.editMessageText(this.buildAdminMenuText(), {
+        parse_mode: 'HTML',
+        ...this.adminMenuKeyboard(),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminMenu', err);
+    }
+  }
+
+  @Action('admin:close')
+  async onAdminClose(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    try {
+      await ctx.deleteMessage();
+    } catch {
+      try {
+        await ctx.editMessageReplyMarkup(undefined);
+      } catch (err) {
+        this.fileLogger.logError('adminClose', err);
+      }
+    }
+    await this.safeAnswer(ctx, 'Panel closed.', false);
+  }
+
+  private async handlePendingAction(
+    ctx: Context,
+    userId: number,
+    username: string | undefined,
+    action: PendingAction,
+    text: string,
+  ): Promise<void> {
+    switch (action) {
+      case 'admin-grant':
+        await this.handleAdminGrant(ctx, userId, username, text);
+        break;
+      case 'admin-revoke':
+        await this.handleAdminRevoke(ctx, userId, text);
+        break;
+      case 'edit-margin':
+        await this.handleSettingValue(ctx, userId, SETTING_KEYS.PROFIT_MARGIN, text, {
+          min: 0,
+          max: 500,
+          label: 'Profit margin',
+          suffix: '%',
+        });
+        break;
+      case 'edit-delivery':
+        await this.handleSettingValue(ctx, userId, SETTING_KEYS.DELIVERY_ETB, text, {
+          min: 0,
+          max: 1_000_000,
+          label: 'Delivery fee',
+          suffix: ' ETB',
+        });
+        break;
+      case 'edit-rate':
+        await this.handleSettingValue(ctx, userId, SETTING_KEYS.USD_TO_ETB, text, {
+          min: 1,
+          max: 10_000,
+          label: 'USD → ETB rate',
+          suffix: '',
+        });
+        break;
+      case 'add-admin':
+        await this.handleAddAdmin(ctx, userId, text);
+        break;
+    }
+  }
+
+  private async handleAdminGrant(
+    ctx: Context,
+    userId: number,
+    username: string | undefined,
+    text: string,
+  ): Promise<void> {
+    const expected = this.config.get('adminPassword', { infer: true });
+    if (!expected) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access is not configured on this bot.');
+      return;
+    }
+
+    if (text !== expected) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('❌ Wrong password. Send /admin to try again.');
+      return;
+    }
+
+    await this.admins.grant(userId, username ?? null);
+    this.adminAuth.clearPending(userId);
+    this.logger.log(`Admin granted to telegramId=${userId}`);
+    await ctx.reply('✅ Admin access granted.');
+    await this.sendAdminMenu(ctx);
+  }
+
+  private async handleAdminRevoke(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    const expected = this.config.get('adminPassword', { infer: true });
+    if (!expected) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access is not configured on this bot.');
+      return;
+    }
+
+    if (text !== expected) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('❌ Wrong password.');
+      return;
+    }
+
+    const removed = await this.admins.deleteByTelegramId(userId);
+    this.adminAuth.clearPending(userId);
+    if (removed) {
+      this.logger.log(`Admin revoked: telegramId=${userId}`);
+      await ctx.reply('✅ Your admin access has been revoked.');
+    } else {
+      await ctx.reply('You were not in the admin list.');
+    }
+  }
+
+  private async handleSettingValue(
+    ctx: Context,
+    userId: number,
+    key: string,
+    text: string,
+    opts: { min: number; max: number; label: string; suffix: string },
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const value = parseFloat(text.replace(/,/g, ''));
+    if (!Number.isFinite(value) || value < opts.min || value > opts.max) {
+      await ctx.reply(
+        `Invalid value. Enter a number between ${opts.min} and ${opts.max}.`,
+      );
+      return;
+    }
+
+    await this.settings.set(key, String(value));
+    this.adminAuth.clearPending(userId);
+    this.logger.log(`Setting ${key} updated to ${value} by admin ${userId}`);
+    await ctx.reply(`✅ ${opts.label} updated to ${value}${opts.suffix}.`);
+    await ctx.reply(await this.buildSettingsMessage(), {
+      parse_mode: 'HTML',
+      ...(await this.buildSettingsKeyboard()),
+    });
+  }
+
+  private async handleAddAdmin(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const targetId = text.replace(/\D/g, '');
+    if (!targetId || !/^\d+$/.test(targetId)) {
+      await ctx.reply('Invalid Telegram ID. Send numbers only, e.g. 1041346091');
+      return;
+    }
+
+    if (String(userId) === targetId) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('You are already an admin.');
+      return;
+    }
+
+    await this.admins.grant(targetId, null);
+    this.adminAuth.clearPending(userId);
+    this.logger.log(`Admin ${targetId} added by telegramId=${userId}`);
+    await ctx.reply(`✅ Admin access granted to user ${targetId}.`);
+    await ctx.reply(await this.buildSettingsMessage(), {
+      parse_mode: 'HTML',
+      ...(await this.buildSettingsKeyboard()),
+    });
+  }
+
+  private async sendAdminMenu(ctx: Context): Promise<void> {
+    await ctx.reply(this.buildAdminMenuText(), {
+      parse_mode: 'HTML',
+      ...this.adminMenuKeyboard(),
+    });
+  }
+
+  private adminMenuKeyboard() {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📊 Report', 'admin:report'),
+        Markup.button.callback('📦 Pending', 'admin:pending'),
+      ],
+      [Markup.button.callback('⚙️ Settings', 'admin:settings')],
+      [Markup.button.callback('✕ Close', 'admin:close')],
+    ]);
+  }
+
+  private buildAdminMenuText(): string {
+    return (
+      '<b>🔐 Admin panel</b>\n\n' +
+      'Choose an option:\n' +
+      '• <b>Report</b> — order stats and recent orders\n' +
+      '• <b>Pending</b> — mark pending orders as delivered\n' +
+      '• <b>Settings</b> — bot config and admin list\n\n' +
+      '<i>You receive new-order digests every 6 hours.</i>'
+    );
+  }
+
+  private buildReportMessage(
+    report: Awaited<ReturnType<OrdersService['getReport']>>,
+  ): string {
+    const total = report.pending + report.cancelled + report.completed;
+    const lines = [
+      '<b>📊 Orders report</b>',
+      '',
+      `<b>Total orders:</b> ${total}`,
+      `⏳ Pending: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Completed: <b>${report.completed}</b>`,
+      `💰 Revenue (non-cancelled): <b>${report.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
+      `🕐 Last 24h: <b>${report.last24hCount}</b> order(s)`,
+      '',
+      `<b>Recent orders</b> (showing ${report.recent.length})`,
+    ];
+
+    if (report.recent.length === 0) {
+      lines.push('', '<i>No orders yet.</i>');
+      return lines.join('\n');
+    }
+
+    report.recent.forEach((o, idx) => {
+      const r = (o as unknown as {
+        reseller?: { fullName?: string | null; phoneNumber?: string | null };
+      }).reseller;
+      const name = this.escapeHtml(r?.fullName || 'unknown');
+      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
+      const status = this.formatStatus(o.status);
+      const price = o.sellingEtb.toLocaleString('en-US') + ' ETB';
+      lines.push('');
+      lines.push(`<b>Order ${idx + 1}</b>`);
+      lines.push(`  ID:     #${o.id}`);
+      lines.push(`  Name:   ${name}`);
+      lines.push(`  Phone:  ${phone}`);
+      lines.push(`  Status: ${status}`);
+      lines.push(`  Price:  ${price}`);
+    });
+
+    return lines.join('\n');
+  }
+
+  private buildPendingMessage(
+    pending: Awaited<ReturnType<OrdersService['findPending']>>,
+  ): string {
+    const lines = [
+      '<b>📦 Pending orders</b>',
+      '',
+      `Total pending: <b>${pending.length}</b>`,
+    ];
+
+    if (pending.length === 0) {
+      lines.push('', '<i>No pending orders. All caught up.</i>');
+      return lines.join('\n');
+    }
+
+    pending.forEach((o, idx) => {
+      const r = (o as unknown as {
+        reseller?: { fullName?: string | null; phoneNumber?: string | null };
+      }).reseller;
+      const name = this.escapeHtml(r?.fullName || 'unknown');
+      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
+      const price = o.sellingEtb.toLocaleString('en-US') + ' ETB';
+      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
+      lines.push('');
+      lines.push(`<b>Order ${idx + 1}</b>`);
+      lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Product: ${title}`);
+      lines.push(`  Name:    ${name}`);
+      lines.push(`  Phone:   ${phone}`);
+      lines.push(`  Price:   ${price}`);
+    });
+
+    lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
+    return lines.join('\n');
+  }
+
+  private pendingKeyboard(
+    pending: Awaited<ReturnType<OrdersService['findPending']>>,
+  ) {
+    const rows: ReturnType<typeof Markup.button.callback>[][] = pending.map((o) => [
+      Markup.button.callback(`✓ Mark #${o.id} done`, `admin:done:${o.id}`),
+    ]);
+    rows.push([
+      Markup.button.callback('📊 Report', 'admin:report'),
+      Markup.button.callback('⚙️ Settings', 'admin:settings'),
+    ]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private formatStatus(status: string): string {
+    if (status === 'pending') return '⏳ Pending';
+    if (status === 'cancelled') return '✗ Cancelled';
+    if (status === 'completed') return '✓ Completed';
+    return status;
+  }
+
+  private formatPhone(raw: string | null | undefined): string {
+    if (!raw) return '—';
+    const trimmed = raw.trim();
+    if (!trimmed) return '—';
+    const digits = trimmed.replace(/[^\d]/g, '');
+    if (!digits) return trimmed;
+    const normalized = this.normalizePhoneDigits(digits);
+    if (/^251\d{9}$/.test(normalized)) {
+      const local = normalized.slice(3);
+      return `+251 ${local.slice(0, 2)} ${local.slice(2, 5)} ${local.slice(5)}`;
+    }
+    return '+' + normalized;
+  }
+
+  private normalizePhoneDigits(digits: string): string {
+    if (digits.startsWith('0') && digits.length === 10) return '251' + digits.slice(1);
+    return digits;
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  private async buildSettingsMessage(): Promise<string> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const margin = await this.settings.getNumber(
+      SETTING_KEYS.PROFIT_MARGIN,
+      pricing.profitMarginPercent,
+    );
+    const delivery = await this.settings.getNumber(
+      SETTING_KEYS.DELIVERY_ETB,
+      pricing.deliveryCostEtb,
+    );
+    const usd = await this.settings.getNumber(SETTING_KEYS.USD_TO_ETB, pricing.usdToEtb ?? 0);
+    const adminList = await this.admins.findAll();
+
+    const lines = [
+      '<b>⚙️ Settings</b>',
+      '',
+      '<b>Pricing</b> (tap a button to edit)',
+      `• Profit margin: <b>${margin}%</b>`,
+      `• Delivery fee: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
+      `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
+      '',
+      `<b>Admins</b> (${adminList.length})`,
+    ];
+
+    if (adminList.length === 0) {
+      lines.push('<i>No admins yet.</i>');
+    } else {
+      for (const a of adminList) {
+        const uname = a.telegramUsername ? `@${a.telegramUsername}` : 'no username';
+        lines.push(`• <code>${a.telegramId}</code> ${uname}`);
+      }
+    }
+
+    lines.push('', '<i>Revoke your own access: /notadmin</i>');
+    return lines.join('\n');
+  }
+
+  private async buildSettingsKeyboard() {
+    const adminList = await this.admins.findAll();
+    const rows: ReturnType<typeof Markup.button.callback>[][] = [
+      [
+        Markup.button.callback('✏️ Margin %', 'admin:edit:margin'),
+        Markup.button.callback('✏️ Delivery', 'admin:edit:delivery'),
+      ],
+      [Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate')],
+      [Markup.button.callback('➕ Add admin', 'admin:add')],
+    ];
+
+    for (const a of adminList) {
+      const label = a.telegramUsername
+        ? `🗑 @${a.telegramUsername}`
+        : `🗑 ${a.telegramId}`;
+      rows.push([
+        Markup.button.callback(label.slice(0, 60), `admin:remove:${a.telegramId}`),
+      ]);
+    }
+
+    rows.push([
+      Markup.button.callback('📊 Report', 'admin:report'),
+      Markup.button.callback('← Menu', 'admin:menu'),
+    ]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private async requireAdmin(ctx: Context): Promise<boolean> {
+    const from = ctx.from;
+    if (!from) return false;
+    if (await this.admins.isAdmin(from.id)) return true;
+    await this.safeAnswer(ctx, 'Admin access required. Send /admin first.', true);
+    return false;
+  }
+
   private parseDisplayedOrder(
     messageText: string,
   ): { title: string; sellingEtb: number } | null {
@@ -272,6 +929,7 @@ export class BotUpdate {
     try {
       await ctx.editMessageText(newText, keyboard);
     } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('editMessage', err);
     }
   }
@@ -288,6 +946,7 @@ export class BotUpdate {
       await ctx.editMessageText(newText);
       await ctx.editMessageReplyMarkup(undefined);
     } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('editMessage', err);
     }
   }
@@ -296,7 +955,18 @@ export class BotUpdate {
     try {
       await ctx.answerCbQuery(text, { show_alert: alert });
     } catch (err) {
+      if (this.isExpiredCallbackError(err)) return;
       this.fileLogger.logError('orderAck', err);
     }
+  }
+
+  private isExpiredCallbackError(err: unknown): boolean {
+    const message = (err as { message?: string })?.message || '';
+    return /query is too old|response timeout expired|query ID is invalid/i.test(message);
+  }
+
+  private isMessageNotModifiedError(err: unknown): boolean {
+    const message = (err as { message?: string })?.message || '';
+    return /message is not modified/i.test(message);
   }
 }

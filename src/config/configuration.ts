@@ -5,6 +5,7 @@ export interface AppConfig {
   telegramApiRoot: string;
   proxyUrl: string;
   adminChatId: string;
+  adminPassword: string;
   database: {
     url: string;
     logging: boolean;
@@ -58,6 +59,7 @@ export default function configuration(): AppConfig {
     telegramApiRoot: envStr('TELEGRAM_API_ROOT', 'https://api.telegram.org'),
     proxyUrl: envStr('PROXY_URL'),
     adminChatId: envStr('ADMIN_CHAT_ID'),
+    adminPassword: envStr('ADMIN_PASSWORD'),
     database: {
       url: envStr('DATABASE_URL'),
       logging: envBool('TYPEORM_LOGGING'),
