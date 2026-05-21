@@ -113,8 +113,8 @@ export class BotUpdate {
       return;
     }
 
-    if (!/shein\.com/i.test(text)) {
-      await ctx.reply('Please send a valid Shein product link.');
+    if (!/shein/i.test(text)) {
+      await ctx.reply('Please send a SHEIN product link (the URL that ends with "-p-<number>.html").');
       return;
     }
 

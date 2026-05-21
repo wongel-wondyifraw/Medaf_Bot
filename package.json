@@ -5,6 +5,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run build",
     "start": "node dist/main.js",
     "start:dev": "ts-node -r dotenv/config src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",

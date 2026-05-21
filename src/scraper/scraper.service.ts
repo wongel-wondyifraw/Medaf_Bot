@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig, ScrapeProviderName } from '../config/configuration';
 import { parseShein, ScrapeProvider, ScrapedProduct } from './types';
+import { LinkResolverService } from './link-resolver.service';
 import { ScraperapiProvider } from './providers/scraperapi.provider';
 import { RetailedProvider } from './providers/retailed.provider';
 import { SearchapiProvider } from './providers/searchapi.provider';
@@ -13,6 +14,7 @@ export class ScraperService {
 
   constructor(
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly linkResolver: LinkResolverService,
     scraperapi: ScraperapiProvider,
     retailed: RetailedProvider,
     searchapi: SearchapiProvider,
@@ -30,7 +32,8 @@ export class ScraperService {
     return list;
   }
 
-  async scrapeProduct(url: string): Promise<ScrapedProduct> {
+  async scrapeProduct(input: string): Promise<ScrapedProduct> {
+    const url = this.linkResolver.resolve(input);
     parseShein(url);
 
     const providers = this.resolveOrder();
