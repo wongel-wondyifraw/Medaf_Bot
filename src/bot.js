@@ -2,10 +2,10 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const { buildAgent } = require('./proxy');
 const { scrapeProduct } = require('./scraper');
-const { calculateSellingPrice } = require('./calculator');
+const { calculateOrderTotalEtb, formatEtb } = require('./calculator');
 
 const LOG_DIR = path.join(__dirname, '..', 'logs');
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -84,28 +84,14 @@ bot.on('text', async (ctx) => {
   try {
     await ctx.reply('Fetching product details, please wait...');
     const product = await scrapeProduct(url);
-    const { sellingPrice, profit, margin } = calculateSellingPrice(product.price);
-    const currency = product.currency || '';
-    const currencySuffix = currency ? ` ${currency}` : '';
-    const baseDisplay = product.priceRaw || `${product.price}${currencySuffix}`;
+    const { totalEtb } = calculateOrderTotalEtb(product);
 
-    const lines = [`Product: ${product.title}`, `Base price: ${baseDisplay}`];
-    if (product.onSale && product.originalPriceRaw) {
-      lines.push(`Original price: ${product.originalPriceRaw} (on sale)`);
-    }
-    if (product.priceUsdRaw && currency && currency !== 'USD') {
-      lines.push(`USD equivalent: ${product.priceUsdRaw}`);
-    }
-    if (!product.inStock) {
-      lines.push('Stock: OUT OF STOCK');
-    }
-    if (product.source) {
-      lines.push(`Source: ${product.source}`);
-    }
-    lines.push(`Selling price (+${margin}%): ${sellingPrice}${currencySuffix}`);
-    lines.push(`Profit: ${profit}${currencySuffix}`);
+    const message = `${product.title}\n\nPrice: ${formatEtb(totalEtb)}`;
+    const keyboard = Markup.inlineKeyboard([
+      Markup.button.callback('🛒 Order', `order:${product.productId || 'na'}`),
+    ]);
 
-    await ctx.reply(lines.join('\n'));
+    await ctx.reply(message, keyboard);
   } catch (err) {
     logError('scrape', err, { url, chatId: ctx.chat.id });
 
@@ -115,6 +101,16 @@ bot.on('text', async (ctx) => {
 
     await ctx.reply(userMessage).catch((replyErr) => logError('reply', replyErr));
     notifyAdmin(`Scrape failed for ${url}\n${err.code || ''} ${err.message}`);
+  }
+});
+
+bot.action(/^order:(.+)$/, async (ctx) => {
+  const productId = ctx.match[1];
+  console.log(`Order click: chat.id=${ctx.chat && ctx.chat.id} productId=${productId}`);
+  try {
+    await ctx.answerCbQuery('Order received! We will contact you shortly.', { show_alert: false });
+  } catch (err) {
+    logError('orderAck', err);
   }
 });
 
