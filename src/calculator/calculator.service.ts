@@ -15,6 +15,40 @@ export interface OrderTotal {
   rateUsed: number;
   fromCurrency: string;
   matchedCategory: string | null;
+  /**
+   * The unit price in USD as derived from the scraper. Null when the scraper
+   * provided no USD-equivalent value (e.g. unsupported currency).
+   */
+  scrapedUnitUsd: number | null;
+  /**
+   * The unit price in USD that was actually used to compute selling_etb.
+   * Equals overrideUnitUsd when provided, otherwise equals scrapedUnitUsd.
+   */
+  effectiveUnitUsd: number | null;
+}
+
+export interface CalculateOptions {
+  /**
+   * When provided, this USD value is used instead of the scraper price and
+   * the ETB conversion goes through USD→ETB regardless of the scraped
+   * currency.
+   */
+  overrideUnitUsd?: number;
+}
+
+/**
+ * Pulls the USD unit price out of a scraped product. Prefers the explicit
+ * `priceUsd` field (set by providers when SHEIN exposes a USD figure) and
+ * falls back to `price` when the currency is already USD. Returns null when
+ * the scraped data is in some other currency.
+ */
+export function extractScrapedUsd(product: ScrapedProduct): number | null {
+  if (typeof product.priceUsd === 'number' && product.priceUsd > 0) {
+    return product.priceUsd;
+  }
+  const currency = (product.currency || '').toUpperCase();
+  if (currency === 'USD' && product.price > 0) return product.price;
+  return null;
 }
 
 @Injectable()
@@ -65,7 +99,10 @@ export class CalculatorService {
     return { rate: null, fromCurrency: upper || 'USD' };
   }
 
-  async calculateOrderTotalEtb(product: ScrapedProduct): Promise<OrderTotal> {
+  async calculateOrderTotalEtb(
+    product: ScrapedProduct,
+    opts: CalculateOptions = {},
+  ): Promise<OrderTotal> {
     const pricing = this.config.get('pricing', { infer: true });
     const margin = await this.settings.getNumber(
       SETTING_KEYS.PROFIT_MARGIN,
@@ -86,12 +123,27 @@ export class CalculatorService {
       );
     }
 
-    let foreignPrice = product.price;
-    let pickedCurrency = product.currency || 'USD';
+    const scrapedUnitUsd = extractScrapedUsd(product);
 
-    if (typeof product.priceUsd === 'number' && product.priceUsd > 0) {
+    let foreignPrice: number;
+    let pickedCurrency: string;
+    let effectiveUnitUsd: number | null;
+
+    if (typeof opts.overrideUnitUsd === 'number' && opts.overrideUnitUsd > 0) {
+      // User-supplied override is always interpreted as USD. The scraped
+      // currency/EUR/GBP path is bypassed so the math is consistent with
+      // what the reseller typed.
+      foreignPrice = opts.overrideUnitUsd;
+      pickedCurrency = 'USD';
+      effectiveUnitUsd = opts.overrideUnitUsd;
+    } else if (typeof product.priceUsd === 'number' && product.priceUsd > 0) {
       foreignPrice = product.priceUsd;
       pickedCurrency = 'USD';
+      effectiveUnitUsd = product.priceUsd;
+    } else {
+      foreignPrice = product.price;
+      pickedCurrency = product.currency || 'USD';
+      effectiveUnitUsd = scrapedUnitUsd;
     }
 
     const { rate, fromCurrency } = await this.pickRate(pickedCurrency);
@@ -113,6 +165,8 @@ export class CalculatorService {
       rateUsed: rate,
       fromCurrency,
       matchedCategory: categoryMatch?.name ?? null,
+      scrapedUnitUsd,
+      effectiveUnitUsd,
     };
   }
 

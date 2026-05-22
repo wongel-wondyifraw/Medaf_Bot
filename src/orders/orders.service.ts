@@ -12,6 +12,8 @@ export interface CreateOrderInput {
   color: string | null;
   quantity: number;
   unitEtb: number | null;
+  scrapedUnitUsd: number | null;
+  userUnitUsd: number | null;
   sellingEtb: number;
 }
 

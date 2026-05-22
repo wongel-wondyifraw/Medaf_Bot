@@ -11,6 +11,18 @@ import { Reseller } from '../resellers/reseller.entity';
 
 export type OrderStatus = 'pending' | 'cancelled' | 'completed';
 
+// PostgreSQL NUMERIC columns are returned as strings by the pg driver. This
+// transformer keeps the application-side type as a plain number while
+// preserving null.
+const numericTransformer = {
+  to: (value: number | null): number | null => value,
+  from: (value: string | null): number | null => {
+    if (value == null) return null;
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  },
+};
+
 @Entity('orders')
 export class Order {
   @PrimaryGeneratedColumn()
@@ -44,6 +56,26 @@ export class Order {
 
   @Column({ type: 'int', nullable: true, name: 'unit_etb' })
   unitEtb!: number | null;
+
+  @Column({
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+    name: 'scraped_unit_usd',
+    transformer: numericTransformer,
+  })
+  scrapedUnitUsd!: number | null;
+
+  @Column({
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+    name: 'user_unit_usd',
+    transformer: numericTransformer,
+  })
+  userUnitUsd!: number | null;
 
   @Column({ type: 'int', name: 'selling_etb' })
   sellingEtb!: number;

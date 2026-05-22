@@ -63,10 +63,12 @@ export class AdminNotificationsService {
       const statusTag = o.status === 'pending' ? '⏳' : o.status === 'cancelled' ? '✗' : '✓';
 
       const total = o.sellingEtb.toLocaleString('en-US');
-      const priceLine =
+      const priceBase =
         o.quantity > 1 && o.unitEtb
           ? `${o.unitEtb.toLocaleString('en-US')} × ${o.quantity} = ${total} ETB`
           : `${total} ETB`;
+      const usdTail = this.formatUsdTail(o);
+      const priceLine = usdTail ? `${priceBase} ${usdTail}` : priceBase;
 
       const variantParts: string[] = [];
       if (o.size) variantParts.push(o.size);
@@ -87,6 +89,28 @@ export class AdminNotificationsService {
       lines.push('', `…and ${orders.length - previewLimit} more.`);
     }
     return lines.join('\n');
+  }
+
+  private formatUsd(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return '$' + value.toFixed(2);
+  }
+
+  private formatUsdTail(order: {
+    userUnitUsd: number | null;
+    scrapedUnitUsd: number | null;
+  }): string {
+    const user = order.userUnitUsd;
+    const scraped = order.scrapedUnitUsd;
+    if (user == null && scraped == null) return '';
+    const used = user ?? scraped;
+    if (used == null) return '';
+    const overrode =
+      user != null && scraped != null && Math.abs(user - scraped) >= 0.01;
+    if (overrode) {
+      return `(${this.formatUsd(used)} USD, scraped ${this.formatUsd(scraped)})`;
+    }
+    return `(${this.formatUsd(used)} USD)`;
   }
 
   private escapeHtml(text: string): string {

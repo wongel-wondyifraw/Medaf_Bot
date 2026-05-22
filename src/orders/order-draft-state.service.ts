@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 const STATE_TTL_MS = 30 * 60 * 1000;
 
-export type DraftStep = 'size' | 'color' | 'qty' | 'confirm';
+export type DraftStep = 'size' | 'color' | 'qty' | 'price' | 'confirm';
 
 export interface OrderDraft {
   productId: string | null;
@@ -13,8 +13,22 @@ export interface OrderDraft {
   selectedSize: string | null;
   selectedColor: string | null;
   quantity: number;
+  /** USD as derived from the scrape. Null when the scraper had no USD figure. */
+  scrapedUnitUsd: number | null;
+  /** USD as entered by the user. Null until the user has chosen on the price step. */
+  userUnitUsd: number | null;
+  /** Per-unit ETB selling price (excludes delivery). */
   unitEtb: number;
+  /** Selling ETB (unit × qty), excludes delivery. */
+  sellingEtb: number;
+  /** Final order total ETB (unit × qty + delivery). */
   totalEtb: number;
+  /** Snapshot of the delivery fee used for this draft. */
+  deliveryEtb: number;
+  /** Snapshot of the profit margin (%) used for this draft. */
+  marginPercent: number;
+  /** Snapshot of the USD→ETB rate used for this draft. */
+  rateUsed: number;
   step: DraftStep;
   since: number;
 }
@@ -25,7 +39,20 @@ export interface CreateDraftInput {
   productTitle: string;
   sizes: string[];
   colors: string[];
+  scrapedUnitUsd: number | null;
   unitEtb: number;
+  sellingEtb: number;
+  totalEtb: number;
+  deliveryEtb: number;
+  marginPercent: number;
+  rateUsed: number;
+}
+
+export interface UpdatePriceInput {
+  userUnitUsd: number;
+  unitEtb: number;
+  sellingEtb: number;
+  totalEtb: number;
 }
 
 @Injectable()
@@ -44,8 +71,14 @@ export class OrderDraftStateService {
       selectedSize: null,
       selectedColor: null,
       quantity: 1,
+      scrapedUnitUsd: input.scrapedUnitUsd,
+      userUnitUsd: null,
       unitEtb: input.unitEtb,
-      totalEtb: input.unitEtb,
+      sellingEtb: input.sellingEtb,
+      totalEtb: input.totalEtb,
+      deliveryEtb: input.deliveryEtb,
+      marginPercent: input.marginPercent,
+      rateUsed: input.rateUsed,
       step,
       since: Date.now(),
     };
@@ -89,7 +122,20 @@ export class OrderDraftStateService {
     const draft = this.getDraft(userId);
     if (!draft) return null;
     draft.quantity = quantity;
-    draft.totalEtb = draft.unitEtb * quantity;
+    // Don't multiply totals here — totals are recomputed by the calculator
+    // when the user supplies (or accepts) the unit price in the next step.
+    draft.step = 'price';
+    draft.since = Date.now();
+    return draft;
+  }
+
+  setUserPrice(userId: number, input: UpdatePriceInput): OrderDraft | null {
+    const draft = this.getDraft(userId);
+    if (!draft) return null;
+    draft.userUnitUsd = input.userUnitUsd;
+    draft.unitEtb = input.unitEtb;
+    draft.sellingEtb = input.sellingEtb;
+    draft.totalEtb = input.totalEtb;
     draft.step = 'confirm';
     draft.since = Date.now();
     return draft;

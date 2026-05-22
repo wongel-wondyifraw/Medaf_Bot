@@ -169,6 +169,14 @@ export class BotUpdate {
       return;
     }
 
+    // If the user is on the price step of an order draft, treat their text as
+    // the USD unit price they actually want to use (or "cancel").
+    const activeDraft = this.orderDraft.getDraft(from.id);
+    if (activeDraft && activeDraft.step === 'price') {
+      await this.handleOrderPriceInput(ctx, from.id, activeDraft, text);
+      return;
+    }
+
     const reseller = await this.ensureReseller(ctx);
     if (!reseller) return;
 
@@ -197,13 +205,22 @@ export class BotUpdate {
       const product = await this.scraper.scrapeProduct(text);
       const totals = await this.calculator.calculateOrderTotalEtb(product);
 
+      // At draft creation quantity is 1, so seller-side per-unit ETB is the
+      // sellingEtb returned by the calculator. Delivery is added on top once
+      // (it does not multiply with quantity later on).
       const draft = this.orderDraft.setDraft(from.id, {
         productId: product.productId,
         link: text,
         productTitle: product.title,
         sizes: product.sizes,
         colors: product.colors,
-        unitEtb: totals.totalEtb,
+        scrapedUnitUsd: totals.scrapedUnitUsd,
+        unitEtb: totals.sellingEtb,
+        sellingEtb: totals.sellingEtb,
+        totalEtb: totals.sellingEtb + totals.deliveryEtb,
+        deliveryEtb: totals.deliveryEtb,
+        marginPercent: totals.marginPercent,
+        rateUsed: totals.rateUsed,
       });
 
       await ctx.reply(this.buildDraftMessage(draft), {
@@ -284,6 +301,33 @@ export class BotUpdate {
     await this.editDraftMessage(ctx, updated);
   }
 
+  @Action('ord:price:keep')
+  async onOrderPriceKeep(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
+    if (draft.step !== 'price') {
+      await this.safeAnswer(ctx, 'Not on the price step.', true);
+      return;
+    }
+    if (draft.scrapedUnitUsd == null) {
+      await this.safeAnswer(
+        ctx,
+        'No scraped price to accept. Type the unit price in USD.',
+        true,
+      );
+      return;
+    }
+    const updated = this.applyUserPrice(from.id, draft, draft.scrapedUnitUsd);
+    if (!updated) return;
+    await this.safeAnswer(ctx, 'Using scraped price.', false);
+    await this.editDraftMessage(ctx, updated);
+  }
+
   @Action('ord:cancel')
   async onOrderCancel(@Ctx() ctx: Context) {
     const from = ctx.from;
@@ -319,6 +363,15 @@ export class BotUpdate {
         return;
       }
 
+      if (draft.step !== 'confirm') {
+        await this.safeAnswer(
+          ctx,
+          'Please complete the unit price step before confirming.',
+          true,
+        );
+        return;
+      }
+
       const order = await this.orders.create({
         resellerId: reseller.id,
         productId: draft.productId,
@@ -328,6 +381,8 @@ export class BotUpdate {
         color: draft.selectedColor,
         quantity: draft.quantity,
         unitEtb: draft.unitEtb,
+        scrapedUnitUsd: draft.scrapedUnitUsd,
+        userUnitUsd: draft.userUnitUsd,
         sellingEtb: draft.totalEtb,
       });
 
@@ -336,7 +391,8 @@ export class BotUpdate {
       this.logger.log(
         `Order #${order.id} placed by reseller ${reseller.id} (${reseller.fullName}) ` +
           `productId=${draft.productId} size=${draft.selectedSize ?? '-'} color=${draft.selectedColor ?? '-'} ` +
-          `qty=${draft.quantity} unit=${draft.unitEtb} total=${draft.totalEtb}`,
+          `qty=${draft.quantity} unit=${draft.unitEtb} total=${draft.totalEtb} ` +
+          `scrapedUsd=${draft.scrapedUnitUsd ?? '-'} userUsd=${draft.userUnitUsd ?? '-'}`,
       );
 
       const summary = this.buildDraftMessage(draft) + '\n\n⏳ Order placed — awaiting confirmation';
@@ -930,6 +986,77 @@ export class BotUpdate {
     });
   }
 
+  private async handleOrderPriceInput(
+    ctx: Context,
+    userId: number,
+    draft: OrderDraft,
+    text: string,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === 'cancel') {
+      this.orderDraft.clearDraft(userId);
+      await ctx.reply('Order cancelled.');
+      return;
+    }
+
+    const parsed = this.parseUsdInput(trimmed);
+    if (parsed == null) {
+      await ctx.reply(
+        'That does not look like a price. Send a number like <code>8.09</code>, ' +
+          'tap "Use scraped", or send <code>cancel</code>.',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+    if (parsed <= 0 || parsed > 100_000) {
+      await ctx.reply('Price must be between 0.01 and 100,000 USD.');
+      return;
+    }
+
+    const updated = this.applyUserPrice(userId, draft, parsed);
+    if (!updated) {
+      await ctx.reply('Order session expired. Send the link again.');
+      return;
+    }
+
+    await ctx.reply(this.buildDraftMessage(updated), {
+      parse_mode: 'HTML',
+      ...this.buildDraftKeyboard(updated),
+    });
+  }
+
+  /**
+   * Recomputes ETB amounts from the snapshot fields stored on the draft and
+   * transitions it to the confirm step. Uses the same math as
+   * CalculatorService so the user sees consistent totals.
+   */
+  private applyUserPrice(
+    userId: number,
+    draft: OrderDraft,
+    userUnitUsd: number,
+  ): OrderDraft | null {
+    const sellingPerUnit = Math.round(
+      userUnitUsd * (1 + draft.marginPercent / 100) * draft.rateUsed,
+    );
+    const sellingTotal = sellingPerUnit * draft.quantity;
+    const total = sellingTotal + draft.deliveryEtb;
+    return this.orderDraft.setUserPrice(userId, {
+      userUnitUsd,
+      unitEtb: sellingPerUnit,
+      sellingEtb: sellingTotal,
+      totalEtb: total,
+    });
+  }
+
+  private parseUsdInput(raw: string): number | null {
+    // Accept "$8.09", "8.09", "8,09" (European decimal). Reject things with
+    // letters or multiple separators.
+    const cleaned = raw.replace(/[$\s]/g, '').replace(',', '.');
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return null;
+    const num = parseFloat(cleaned);
+    return Number.isFinite(num) ? num : null;
+  }
+
   private async handleEditCategoryCost(
     ctx: Context,
     userId: number,
@@ -1248,11 +1375,31 @@ export class BotUpdate {
 
   private formatOrderPrice(order: Order): string {
     const total = order.sellingEtb.toLocaleString('en-US') + ' ETB';
-    if (order.quantity > 1 && order.unitEtb) {
-      const unit = order.unitEtb.toLocaleString('en-US');
-      return `${unit} × ${order.quantity} = ${total}`;
+    const main =
+      order.quantity > 1 && order.unitEtb
+        ? `${order.unitEtb.toLocaleString('en-US')} × ${order.quantity} = ${total}`
+        : total;
+    const usdTail = this.formatUsdTail(order);
+    return usdTail ? `${main} ${usdTail}` : main;
+  }
+
+  /**
+   * Returns "($8.09 USD)" or "($8.09 USD, scraped $32.36)" depending on
+   * whether the user overrode the scraped price. Empty when no USD values
+   * are recorded.
+   */
+  private formatUsdTail(order: Order): string {
+    const user = order.userUnitUsd;
+    const scraped = order.scrapedUnitUsd;
+    if (user == null && scraped == null) return '';
+    const used = user ?? scraped;
+    if (used == null) return '';
+    const overrode =
+      user != null && scraped != null && Math.abs(user - scraped) >= 0.01;
+    if (overrode) {
+      return `(${this.formatUsd(used)} USD, scraped ${this.formatUsd(scraped)})`;
     }
-    return total;
+    return `(${this.formatUsd(used)} USD)`;
   }
 
   private formatOrderLink(order: Order): string | null {
@@ -1407,20 +1554,40 @@ export class BotUpdate {
 
   private buildDraftMessage(draft: OrderDraft): string {
     const lines = [`<b>${this.escapeHtml(draft.productTitle)}</b>`, ''];
-    lines.push(`Unit price: <b>${draft.unitEtb.toLocaleString('en-US')} ETB</b>`);
+
     if (draft.selectedSize) {
       lines.push(`Size: <b>${this.escapeHtml(draft.selectedSize)}</b>`);
     }
     if (draft.selectedColor) {
       lines.push(`Color: <b>${this.escapeHtml(draft.selectedColor)}</b>`);
     }
-    if (draft.step === 'qty' || draft.step === 'confirm') {
+    if (draft.step === 'qty' || draft.step === 'price' || draft.step === 'confirm') {
       lines.push(`Quantity: <b>${draft.quantity}</b>`);
     }
+
+    if (draft.step === 'price') {
+      lines.push('');
+      const scraped = this.formatUsd(draft.scrapedUnitUsd);
+      lines.push(`Scraped unit price: <b>${scraped}</b>`);
+    }
+
     if (draft.step === 'confirm') {
+      lines.push('');
+      const used = draft.userUnitUsd ?? draft.scrapedUnitUsd;
+      lines.push(`Unit price (USD): <b>${this.formatUsd(used)}</b>`);
+      if (
+        draft.userUnitUsd != null &&
+        draft.scrapedUnitUsd != null &&
+        Math.abs(draft.userUnitUsd - draft.scrapedUnitUsd) >= 0.01
+      ) {
+        lines.push(`Scraped was: <i>${this.formatUsd(draft.scrapedUnitUsd)}</i>`);
+      }
+      lines.push(`Unit price (ETB): <b>${draft.unitEtb.toLocaleString('en-US')} ETB</b>`);
+      lines.push(`Delivery: <b>${draft.deliveryEtb.toLocaleString('en-US')} ETB</b>`);
       lines.push('');
       lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
+
     lines.push('');
     lines.push(`<i>${this.draftStepHint(draft)}</i>`);
     return lines.join('\n');
@@ -1434,6 +1601,11 @@ export class BotUpdate {
         return 'Choose a color to continue.';
       case 'qty':
         return 'Choose a quantity to continue.';
+      case 'price':
+        return (
+          'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09), ' +
+          'or tap "Use scraped" to accept the scraped value.'
+        );
       case 'confirm':
         return 'Review the summary, then confirm or cancel.';
     }
@@ -1469,12 +1641,29 @@ export class BotUpdate {
         [Markup.button.callback('✗ Cancel', 'ord:cancel')],
       ]);
     }
+    if (draft.step === 'price') {
+      const scrapedLabel =
+        draft.scrapedUnitUsd != null
+          ? `✓ Use scraped (${this.formatUsd(draft.scrapedUnitUsd)})`
+          : '✓ Use scraped';
+      const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+      if (draft.scrapedUnitUsd != null) {
+        rows.push([Markup.button.callback(scrapedLabel, 'ord:price:keep')]);
+      }
+      rows.push([Markup.button.callback('✗ Cancel', 'ord:cancel')]);
+      return Markup.inlineKeyboard(rows);
+    }
     return Markup.inlineKeyboard([
       [
         Markup.button.callback('✓ Place order', 'ord:confirm'),
         Markup.button.callback('✗ Cancel', 'ord:cancel'),
       ],
     ]);
+  }
+
+  private formatUsd(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return '$' + value.toFixed(2);
   }
 
   private chunkButtons<T>(items: T[], perRow: number): T[][] {
