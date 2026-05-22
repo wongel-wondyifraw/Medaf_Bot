@@ -29,6 +29,8 @@ export interface OrderDraft {
   marginPercent: number;
   /** Snapshot of the USD→ETB rate used for this draft. */
   rateUsed: number;
+  /** Resolved category name (or null when no category matched). */
+  categoryName: string | null;
   step: DraftStep;
   since: number;
 }
@@ -46,6 +48,7 @@ export interface CreateDraftInput {
   deliveryEtb: number;
   marginPercent: number;
   rateUsed: number;
+  categoryName: string | null;
 }
 
 export interface UpdatePriceInput {
@@ -79,6 +82,7 @@ export class OrderDraftStateService {
       deliveryEtb: input.deliveryEtb,
       marginPercent: input.marginPercent,
       rateUsed: input.rateUsed,
+      categoryName: input.categoryName,
       step,
       since: Date.now(),
     };

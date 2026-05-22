@@ -78,9 +78,20 @@ export function extractSlugTitle(url: string): string | null {
   }
   const m = parsed.pathname.match(/\/([^/?]+)-p-\d+\.html$/i);
   if (!m) return null;
-  const raw = m[1].replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // SHEIN slugs encode the apostrophe in possessives as "-s-" (e.g.
+  // "Men-s-Linen-Pants"). Restore it before stripping the remaining
+  // dashes so we don't end up with "Men S Linen Pants".
+  const raw = m[1]
+    .replace(/-s-/gi, "'s-")
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!raw) return null;
-  return raw.replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // Title-case only at the start of each space-delimited word so apostrophes
+  // do not trigger an unwanted "Men'S" capitalization.
+  return raw.replace(/(^|\s)([a-z])/g, (_, sp: string, c: string) => sp + c.toUpperCase());
 }
 
 function escapeRegex(s: string): string {

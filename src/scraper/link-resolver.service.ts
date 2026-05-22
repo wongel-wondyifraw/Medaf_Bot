@@ -1,10 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 /**
- * Result of classifying a user-supplied SHEIN message. The bot uses this to
- * decide whether to call the scraping providers ('scrape') or to start a
- * manual order flow where the user supplies the USD price themselves
- * ('manual').
+ * Result of classifying a user-supplied SHEIN message. Currently every
+ * valid SHEIN link (desktop, mobile, or share) is routed through the
+ * manual order flow — the scraping providers remain in the codebase but
+ * are intentionally not invoked. 'scrape' is preserved on the type union
+ * so the scraping path can be re-enabled in the future without a wider
+ * refactor.
  */
 export type LinkClassification =
   | { kind: 'scrape'; url: string }
@@ -147,26 +149,9 @@ export class LinkResolverService {
     }
 
     const productId = parsed.pathname.match(/-p-(\d+)\.html$/i)?.[1] ?? null;
+    const isShare = this.isShareLink(url);
 
-    if (this.isShareLink(url)) {
-      return {
-        kind: 'manual',
-        url,
-        productId,
-        reason: 'SHEIN share link — using manual flow.',
-      };
-    }
-
-    if (host === 'm.shein.com') {
-      return {
-        kind: 'manual',
-        url,
-        productId,
-        reason: 'Mobile SHEIN host — using manual flow (scraping is unreliable).',
-      };
-    }
-
-    if (!productId) {
+    if (!isShare && !productId) {
       return {
         kind: 'invalid',
         reason:
@@ -175,10 +160,23 @@ export class LinkResolverService {
       };
     }
 
-    // Drop tracking query before passing to providers.
+    // All valid SHEIN links — desktop, mobile, share — go through the
+    // manual flow. The scraping providers are still wired in the codebase
+    // for future use, but the bot does not call them.
     const cleaned = new URL(url);
     cleaned.search = '';
     cleaned.hash = '';
-    return { kind: 'scrape', url: cleaned.toString() };
+    const reason = isShare
+      ? 'SHEIN share link'
+      : host === 'm.shein.com'
+        ? 'SHEIN mobile link'
+        : 'SHEIN product link';
+
+    return {
+      kind: 'manual',
+      url: cleaned.toString(),
+      productId,
+      reason,
+    };
   }
 }

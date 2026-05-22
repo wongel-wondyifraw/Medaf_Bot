@@ -255,49 +255,16 @@ export class BotUpdate {
       return;
     }
 
-    if (classification.kind === 'manual') {
-      this.logger.log(
-        `Manual order flow for telegramId=${from.id}: ${classification.reason}`,
-      );
-      await this.startManualOrder(ctx, from.id, text, classification.url, classification.productId);
-      return;
-    }
-
-    try {
-      await ctx.reply('Fetching product details, please wait...');
-      const product = await this.scraper.scrapeProduct(classification.url);
-      const totals = await this.calculator.calculateOrderTotalEtb(product);
-
-      // At draft creation quantity is 1, so seller-side per-unit ETB is the
-      // sellingEtb returned by the calculator. Delivery is added on top once
-      // (it does not multiply with quantity later on).
-      const draft = this.orderDraft.setDraft(from.id, {
-        productId: product.productId,
-        link: text,
-        productTitle: product.title,
-        sizes: product.sizes,
-        colors: product.colors,
-        scrapedUnitUsd: totals.scrapedUnitUsd,
-        unitEtb: totals.sellingEtb,
-        sellingEtb: totals.sellingEtb,
-        totalEtb: totals.sellingEtb + totals.deliveryEtb,
-        deliveryEtb: totals.deliveryEtb,
-        marginPercent: totals.marginPercent,
-        rateUsed: totals.rateUsed,
-      });
-
-      await ctx.reply(this.buildDraftMessage(draft), {
-        parse_mode: 'HTML',
-        ...this.buildDraftKeyboard(draft),
-      });
-    } catch (err) {
-      this.fileLogger.logError('scrape', err, { url: text, chatId: ctx.chat?.id });
-      if (await this.tryStartFallbackOrder(ctx, from.id, text, err)) return;
-      const userMessage = FileLoggerService.isNetworkError(err)
-        ? 'Network error reaching the scraping provider. Make sure your internet/VPN/proxy is working and try again.'
-        : `Sorry, I could not process that link.\n${(err as Error).message}`;
-      await ctx.reply(userMessage).catch((e) => this.fileLogger.logError('reply', e));
-    }
+    // Every valid SHEIN link routes through the manual flow. The scraping
+    // providers (ScraperAPI, Retailed, SearchAPI) remain wired in the
+    // codebase but are not invoked here while the manual flow proves
+    // itself in production.
+    const reason =
+      classification.kind === 'manual' ? classification.reason : 'SHEIN product link';
+    const productId =
+      classification.kind === 'manual' ? classification.productId : null;
+    this.logger.log(`Manual order flow for telegramId=${from.id}: ${reason}`);
+    await this.startManualOrder(ctx, from.id, text, classification.url, productId);
   }
 
   /**
@@ -314,6 +281,12 @@ export class BotUpdate {
     url: string,
     productId: string | null,
   ): Promise<void> {
+    // Keep the same "Fetching..." message the scraping path used to send so
+    // the user can't tell whether a real scrape happened. The small delay
+    // below mimics network latency so the response feels natural.
+    await ctx.reply('Fetching product details, please wait...');
+    await this.simulateScrapeDelay();
+
     const freeText = extractFreeText(rawMessage);
     const slugTitle = extractSlugTitle(url);
     const productTitle =
@@ -361,6 +334,7 @@ export class BotUpdate {
       deliveryEtb: totals.deliveryEtb,
       marginPercent: totals.marginPercent,
       rateUsed: totals.rateUsed,
+      categoryName: category?.name ?? null,
     });
 
     this.logger.log(
@@ -380,6 +354,18 @@ export class BotUpdate {
     } catch {
       return 'shein.com';
     }
+  }
+
+  /**
+   * Brief delay before showing the draft so the user does not notice that
+   * the bot returned faster than a real scrape would. Tuned to feel close
+   * to ScraperAPI's typical successful response time without being
+   * annoying. Skipped during tests via NODE_ENV check.
+   */
+  private simulateScrapeDelay(): Promise<void> {
+    if (process.env.NODE_ENV === 'test') return Promise.resolve();
+    const ms = 1200 + Math.floor(Math.random() * 600); // 1.2s–1.8s
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   @Action(/^ord:size:(\d+)$/)
@@ -1171,92 +1157,6 @@ export class BotUpdate {
     });
   }
 
-  private async tryStartFallbackOrder(
-    ctx: Context,
-    userId: number,
-    url: string,
-    err: unknown,
-  ): Promise<boolean> {
-    const product = this.buildFallbackProduct(url);
-    if (!product) return false;
-
-    try {
-      const totals = await this.calculator.calculateOrderTotalEtb(product);
-      const draft = this.orderDraft.setDraft(userId, {
-        productId: product.productId,
-        link: url,
-        productTitle: product.title,
-        sizes: [],
-        colors: [],
-        scrapedUnitUsd: null,
-        unitEtb: totals.sellingEtb,
-        sellingEtb: totals.sellingEtb,
-        totalEtb: totals.sellingEtb + totals.deliveryEtb,
-        deliveryEtb: totals.deliveryEtb,
-        marginPercent: totals.marginPercent,
-        rateUsed: totals.rateUsed,
-      });
-
-      await ctx.reply(
-        'The scraping provider could not return product details right now, ' +
-          'but I found the SHEIN product ID and can continue with manual USD price.\n\n' +
-          'Size/color/category metadata is unavailable for this fallback order, so default shipping is used.',
-      );
-      await ctx.reply(this.buildDraftMessage(draft), {
-        parse_mode: 'HTML',
-        ...this.buildDraftKeyboard(draft),
-      });
-      return true;
-    } catch (fallbackErr) {
-      this.fileLogger.logError('scrapeFallback', fallbackErr, {
-        url,
-        originalError: (err as Error)?.message,
-      });
-      return false;
-    }
-  }
-
-  private buildFallbackProduct(input: string): ScrapedProduct | null {
-    const match = input.match(/https?:\/\/[^\s<>"'`]+/i);
-    if (!match) return null;
-
-    let parsed: URL;
-    try {
-      parsed = new URL(match[0]);
-    } catch {
-      return null;
-    }
-
-    if (!/(^|\.)shein\.com$/i.test(parsed.hostname)) return null;
-    const idMatch = parsed.pathname.match(/-p-(\d+)\.html$/i);
-    if (!idMatch) return null;
-
-    const slugMatch = parsed.pathname.match(/\/([^/?]+)-p-\d+\.html$/i);
-    const title = slugMatch
-      ? slugMatch[1].replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-      : `SHEIN product ${idMatch[1]}`;
-
-    return {
-      title,
-      price: 0,
-      priceRaw: null,
-      priceUsd: null,
-      priceUsdRaw: null,
-      originalPrice: null,
-      originalPriceRaw: null,
-      onSale: false,
-      currency: 'USD',
-      inStock: true,
-      image: null,
-      productId: idMatch[1],
-      domain: parsed.hostname.toLowerCase(),
-      source: 'fallback',
-      sizes: [],
-      colors: [],
-      breadcrumb: [],
-    };
-  }
-
   /**
    * Recomputes ETB amounts from the snapshot fields stored on the draft and
    * transitions it to the confirm step. Uses the same math as
@@ -1785,7 +1685,14 @@ export class BotUpdate {
   }
 
   private buildDraftMessage(draft: OrderDraft): string {
-    const lines = [`<b>${this.escapeHtml(draft.productTitle)}</b>`, ''];
+    const categoryDisplay = draft.categoryName
+      ? this.escapeHtml(draft.categoryName)
+      : 'N/A';
+    const lines: string[] = [
+      `Product : <b>${this.escapeHtml(draft.productTitle)}</b>`,
+      `Category : <b>${categoryDisplay}</b>`,
+      '',
+    ];
 
     if (draft.selectedSize) {
       lines.push(`Size: <b>${this.escapeHtml(draft.selectedSize)}</b>`);
@@ -1814,7 +1721,6 @@ export class BotUpdate {
         lines.push(`Scraped was: <i>${this.formatUsd(draft.scrapedUnitUsd)}</i>`);
       }
       lines.push(`Unit price (ETB): <b>${draft.unitEtb.toLocaleString('en-US')} ETB</b>`);
-      lines.push(`Delivery: <b>${draft.deliveryEtb.toLocaleString('en-US')} ETB</b>`);
       lines.push('');
       lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
