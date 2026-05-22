@@ -119,6 +119,7 @@ export class RetailedProvider implements ScrapeProvider {
       source: 'retailed',
       sizes,
       colors,
+      breadcrumb: [],
     };
   }
 }

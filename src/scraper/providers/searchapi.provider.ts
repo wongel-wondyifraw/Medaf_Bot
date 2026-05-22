@@ -119,6 +119,7 @@ export class SearchapiProvider implements ScrapeProvider {
         source: 'searchapi',
         sizes,
         colors,
+        breadcrumb: [],
       };
     } catch (err) {
       const e = err as { code?: string; message?: string };

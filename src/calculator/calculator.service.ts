@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CategoriesService } from '../categories/categories.service';
 import { AppConfig } from '../config/configuration';
 import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
+
+export const DEFAULT_DELIVERY_ETB = 500;
 
 export interface OrderTotal {
   totalEtb: number;
@@ -11,14 +14,40 @@ export interface OrderTotal {
   marginPercent: number;
   rateUsed: number;
   fromCurrency: string;
+  matchedCategory: string | null;
 }
 
 @Injectable()
 export class CalculatorService {
+  private readonly logger = new Logger(CalculatorService.name);
+
   constructor(
     private readonly config: ConfigService<AppConfig, true>,
     private readonly settings: SettingsService,
+    private readonly categoriesService: CategoriesService,
   ) {}
+
+  /**
+   * Resolves the shipping cost for a product by matching its breadcrumb
+   * against the `categories` table. Walks the breadcrumb from most-specific
+   * to least-specific and returns the first category that has a non-null
+   * shipping_cost. Returns null when no category match has a configured cost.
+   */
+  private async resolveCategoryShipping(
+    product: ScrapedProduct,
+  ): Promise<{ name: string; shippingEtb: number } | null> {
+    const breadcrumb = product.breadcrumb ?? [];
+    if (breadcrumb.length === 0) return null;
+    for (let i = breadcrumb.length - 1; i >= 0; i--) {
+      const name = breadcrumb[i]?.trim();
+      if (!name) continue;
+      const category = await this.categoriesService.findByName(name);
+      if (category && category.shippingCost != null) {
+        return { name: category.name, shippingEtb: category.shippingCost };
+      }
+    }
+    return null;
+  }
 
   private async pickRate(
     currency: string,
@@ -42,10 +71,20 @@ export class CalculatorService {
       SETTING_KEYS.PROFIT_MARGIN,
       pricing.profitMarginPercent,
     );
-    const delivery = await this.settings.getNumber(
-      SETTING_KEYS.DELIVERY_ETB,
-      pricing.deliveryCostEtb,
-    );
+
+    const categoryMatch = await this.resolveCategoryShipping(product);
+    const delivery = categoryMatch ? categoryMatch.shippingEtb : DEFAULT_DELIVERY_ETB;
+    if (categoryMatch) {
+      this.logger.log(
+        `Shipping for "${product.title.slice(0, 40)}…" resolved from category ` +
+          `"${categoryMatch.name}" = ${delivery} ETB`,
+      );
+    } else {
+      this.logger.log(
+        `Shipping for "${product.title.slice(0, 40)}…" fell back to default ${DEFAULT_DELIVERY_ETB} ETB ` +
+          `(breadcrumb=${(product.breadcrumb ?? []).join(' > ') || 'empty'})`,
+      );
+    }
 
     let foreignPrice = product.price;
     let pickedCurrency = product.currency || 'USD';
@@ -73,6 +112,7 @@ export class CalculatorService {
       marginPercent: margin,
       rateUsed: rate,
       fromCurrency,
+      matchedCategory: categoryMatch?.name ?? null,
     };
   }
 

@@ -15,6 +15,7 @@ export interface ScrapedProduct {
   source?: string;
   sizes: string[];
   colors: string[];
+  breadcrumb: string[];
 }
 
 export interface ScrapeProvider {

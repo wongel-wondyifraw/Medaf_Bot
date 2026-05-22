@@ -127,6 +127,30 @@ export class ScraperapiProvider implements ScrapeProvider {
     return sizes;
   }
 
+  private extractBreadcrumb(markdown: string): string[] {
+    const items: string[] = [];
+    const lines = markdown.split('\n');
+    let inList = false;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const m = line.match(/^\d+\.\s+(.+)$/);
+      if (m) {
+        let item = m[1].trim();
+        const linkMatch = item.match(/^\[([^\]]+)\]\([^)]*\)/);
+        if (linkMatch) item = linkMatch[1].trim();
+        item = item.replace(/\s*\/\s*$/, '').trim();
+        if (item && item.toLowerCase() !== 'home') items.push(item);
+        inList = true;
+        if (items.length >= 15) break;
+      } else if (inList && line.length === 0) {
+        continue;
+      } else if (inList) {
+        break;
+      }
+    }
+    return items;
+  }
+
   private extractColors(markdown: string): string[] {
     const m = markdown.match(
       /##\s+Color\s*:?[^\n]*\n([\s\S]*?)(?:##\s|CONFIRM|ADD TO CART|Description)/i,
@@ -203,6 +227,7 @@ export class ScraperapiProvider implements ScrapeProvider {
       source: 'scraperapi',
       sizes: this.extractSizes(body),
       colors: this.extractColors(body),
+      breadcrumb: this.extractBreadcrumb(body),
     };
   }
 }
