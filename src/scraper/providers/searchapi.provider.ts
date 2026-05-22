@@ -89,6 +89,19 @@ export class SearchapiProvider implements ScrapeProvider {
       const first = imgs[0];
       const firstImage = typeof first === 'string' ? first : first?.url || null;
 
+      const sizesRaw = Array.isArray(product.sizes)
+        ? (product.sizes as Array<string | { name?: string; label?: string }>)
+        : [];
+      const colorsRaw = Array.isArray(product.colors)
+        ? (product.colors as Array<string | { name?: string; label?: string }>)
+        : [];
+      const sizes = sizesRaw
+        .map((s) => (typeof s === 'string' ? s : s?.name || s?.label || ''))
+        .filter((s): s is string => !!s && s.length > 0 && s.length <= 40);
+      const colors = colorsRaw
+        .map((c) => (typeof c === 'string' ? c : c?.name || c?.label || ''))
+        .filter((c): c is string => !!c && c.length > 0 && c.length <= 40);
+
       return {
         title: String(product.name || product.title || 'Unknown product'),
         price: value,
@@ -104,6 +117,8 @@ export class SearchapiProvider implements ScrapeProvider {
         productId,
         domain,
         source: 'searchapi',
+        sizes,
+        colors,
       };
     } catch (err) {
       const e = err as { code?: string; message?: string };

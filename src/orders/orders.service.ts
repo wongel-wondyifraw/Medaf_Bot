@@ -7,6 +7,11 @@ export interface CreateOrderInput {
   resellerId: number;
   productId: string | null;
   productTitle: string;
+  productUrl: string | null;
+  size: string | null;
+  color: string | null;
+  quantity: number;
+  unitEtb: number | null;
   sellingEtb: number;
 }
 

@@ -30,6 +30,21 @@ export class Order {
   @Column({ type: 'text', name: 'product_title' })
   productTitle!: string;
 
+  @Column({ type: 'text', nullable: true, name: 'product_url' })
+  productUrl!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  size!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  color!: string | null;
+
+  @Column({ type: 'int', default: 1 })
+  quantity!: number;
+
+  @Column({ type: 'int', nullable: true, name: 'unit_etb' })
+  unitEtb!: number | null;
+
   @Column({ type: 'int', name: 'selling_etb' })
   sellingEtb!: number;
 

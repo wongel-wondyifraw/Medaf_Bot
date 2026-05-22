@@ -13,6 +13,8 @@ export interface ScrapedProduct {
   productId: string | null;
   domain: string;
   source?: string;
+  sizes: string[];
+  colors: string[];
 }
 
 export interface ScrapeProvider {

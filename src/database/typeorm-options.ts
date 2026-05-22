@@ -12,6 +12,7 @@ import { Admins1779200000000 } from '../migrations/1779200000000-Admins';
 import { Settings1779300000000 } from '../migrations/1779300000000-Settings';
 import { HealthLog1779400000000 } from '../migrations/1779400000000-HealthLog';
 import { Categories1779500000000 } from '../migrations/1779500000000-Categories';
+import { OrderDetails1779600000000 } from '../migrations/1779600000000-OrderDetails';
 
 export function buildTypeOrmOptions(opts: {
   url: string;
@@ -33,6 +34,7 @@ export function buildTypeOrmOptions(opts: {
       Settings1779300000000,
       HealthLog1779400000000,
       Categories1779500000000,
+      OrderDetails1779600000000,
     ],
     synchronize: false,
     logging: opts.logging,

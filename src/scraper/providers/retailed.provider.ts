@@ -89,6 +89,19 @@ export class RetailedProvider implements ScrapeProvider {
     const first = images[0];
     const firstImage = typeof first === 'string' ? first : first?.url || null;
 
+    const sizesRaw = Array.isArray(body.sizes)
+      ? (body.sizes as Array<string | { name?: string; label?: string }>)
+      : [];
+    const colorsRaw = Array.isArray(body.colors)
+      ? (body.colors as Array<string | { name?: string; label?: string }>)
+      : [];
+    const sizes = sizesRaw
+      .map((s) => (typeof s === 'string' ? s : s?.name || s?.label || ''))
+      .filter((s): s is string => !!s && s.length > 0 && s.length <= 40);
+    const colors = colorsRaw
+      .map((c) => (typeof c === 'string' ? c : c?.name || c?.label || ''))
+      .filter((c): c is string => !!c && c.length > 0 && c.length <= 40);
+
     return {
       title: String(body.name || body.title || 'Unknown product'),
       price: priceValue,
@@ -104,6 +117,8 @@ export class RetailedProvider implements ScrapeProvider {
       productId,
       domain: new URL(url).hostname.toLowerCase(),
       source: 'retailed',
+      sizes,
+      colors,
     };
   }
 }

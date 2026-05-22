@@ -107,6 +107,50 @@ export class ScraperapiProvider implements ScrapeProvider {
     return m ? m[1] : null;
   }
 
+  private extractSizes(markdown: string): string[] {
+    const m = markdown.match(/##\s+Size\s*\n([\s\S]*?)(?:Size Guide|##\s|ADD TO CART)/i);
+    if (!m) return [];
+    const seen = new Set<string>();
+    const sizes: string[] = [];
+    for (const rawLine of m[1].split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (/please choose|fit finder|check my size|not your size|tell me/i.test(line)) continue;
+      if (/^[![]/.test(line)) continue;
+      if (line.length > 20) continue;
+      const upper = line.toUpperCase();
+      if (seen.has(upper)) continue;
+      seen.add(upper);
+      sizes.push(line);
+      if (sizes.length >= 30) break;
+    }
+    return sizes;
+  }
+
+  private extractColors(markdown: string): string[] {
+    const m = markdown.match(
+      /##\s+Color\s*:?[^\n]*\n([\s\S]*?)(?:##\s|CONFIRM|ADD TO CART|Description)/i,
+    );
+    if (!m) return [];
+    const seen = new Set<string>();
+    const colors: string[] = [];
+    const re = /!\[([^\]]+)\]\(/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(m[1])) !== null) {
+      const name = match[1].trim();
+      if (!name) continue;
+      if (/^(hot|trends|large image|fit finder|new|sale)$/i.test(name)) continue;
+      if (/^\d/.test(name)) continue;
+      if (name.length > 40) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      colors.push(name);
+      if (colors.length >= 30) break;
+    }
+    return colors;
+  }
+
   async scrape(url: string): Promise<ScrapedProduct> {
     const cfg = this.config.get('scrape', { infer: true }).scraperapi;
     const apiKey = cfg.key;
@@ -157,6 +201,8 @@ export class ScraperapiProvider implements ScrapeProvider {
       productId: this.extractProductId(url),
       domain: parsed.hostname.toLowerCase(),
       source: 'scraperapi',
+      sizes: this.extractSizes(body),
+      colors: this.extractColors(body),
     };
   }
 }

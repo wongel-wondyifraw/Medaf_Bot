@@ -14,6 +14,10 @@ import { Category } from '../categories/category.entity';
 import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
 import { OrdersService } from '../orders/orders.service';
+import {
+  OrderDraft,
+  OrderDraftStateService,
+} from '../orders/order-draft-state.service';
 import { ResellersService } from '../resellers/resellers.service';
 import { ScraperService } from '../scraper/scraper.service';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
@@ -25,6 +29,7 @@ export class BotUpdate {
   constructor(
     private readonly resellers: ResellersService,
     private readonly orders: OrdersService,
+    private readonly orderDraft: OrderDraftStateService,
     private readonly admins: AdminsService,
     private readonly adminAuth: AdminAuthStateService,
     private readonly scraper: ScraperService,
@@ -190,11 +195,20 @@ export class BotUpdate {
       await ctx.reply('Fetching product details, please wait...');
       const product = await this.scraper.scrapeProduct(text);
       const totals = await this.calculator.calculateOrderTotalEtb(product);
-      const body = `${product.title}\n\nPrice: ${this.calculator.formatEtb(totals.totalEtb)}`;
-      const keyboard = Markup.inlineKeyboard([
-        Markup.button.callback('🛒 Order', `order:${product.productId || 'na'}`),
-      ]);
-      await ctx.reply(body, keyboard);
+
+      const draft = this.orderDraft.setDraft(from.id, {
+        productId: product.productId,
+        productUrl: text,
+        productTitle: product.title,
+        sizes: product.sizes,
+        colors: product.colors,
+        unitEtb: totals.totalEtb,
+      });
+
+      await ctx.reply(this.buildDraftMessage(draft), {
+        parse_mode: 'HTML',
+        ...this.buildDraftKeyboard(draft),
+      });
     } catch (err) {
       this.fileLogger.logError('scrape', err, { url: text, chatId: ctx.chat?.id });
       const userMessage = FileLoggerService.isNetworkError(err)
@@ -204,25 +218,92 @@ export class BotUpdate {
     }
   }
 
-  @Action(/^order:(.+)$/)
-  async onOrder(@Ctx() ctx: Context) {
+  @Action(/^ord:size:(\d+)$/)
+  async onOrderPickSize(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
-
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const rawProductId = match?.[1];
-    const productId = rawProductId && rawProductId !== 'na' ? rawProductId : null;
+    const idx = parseInt(match?.[1] || '-1', 10);
+    const size = draft.sizes[idx];
+    if (!size) {
+      await this.safeAnswer(ctx, 'Invalid size selection.', true);
+      return;
+    }
+    const updated = this.orderDraft.selectSize(from.id, size);
+    if (!updated) return;
+    await this.safeAnswer(ctx, `Size: ${size}`, false);
+    await this.editDraftMessage(ctx, updated);
+  }
 
-    const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
-    const messageText = cbMessage?.text || '';
-    const parsed = this.parseDisplayedOrder(messageText);
+  @Action(/^ord:color:(\d+)$/)
+  async onOrderPickColor(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const idx = parseInt(match?.[1] || '-1', 10);
+    const color = draft.colors[idx];
+    if (!color) {
+      await this.safeAnswer(ctx, 'Invalid color selection.', true);
+      return;
+    }
+    const updated = this.orderDraft.selectColor(from.id, color);
+    if (!updated) return;
+    await this.safeAnswer(ctx, `Color: ${color}`, false);
+    await this.editDraftMessage(ctx, updated);
+  }
 
-    if (!parsed) {
-      this.fileLogger.logError('orderParse', new Error('Could not parse order message'), {
-        messageText,
-        productId,
-      });
-      await this.safeAnswer(ctx, 'Could not capture order details. Please request a fresh price first.', true);
+  @Action(/^ord:qty:(\d+)$/)
+  async onOrderPickQuantity(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const qty = parseInt(match?.[1] || '0', 10);
+    if (!Number.isFinite(qty) || qty < 1 || qty > 100) {
+      await this.safeAnswer(ctx, 'Invalid quantity.', true);
+      return;
+    }
+    const updated = this.orderDraft.selectQuantity(from.id, qty);
+    if (!updated) return;
+    await this.safeAnswer(ctx, `Quantity: ${qty}`, false);
+    await this.editDraftMessage(ctx, updated);
+  }
+
+  @Action('ord:cancel')
+  async onOrderCancel(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    this.orderDraft.clearDraft(from.id);
+    await this.safeAnswer(ctx, 'Order cancelled.', false);
+    try {
+      await ctx.editMessageReplyMarkup(undefined);
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('orderDraftCancel', err);
+    }
+  }
+
+  @Action('ord:confirm')
+  async onOrderConfirm(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
       return;
     }
 
@@ -239,27 +320,40 @@ export class BotUpdate {
 
       const order = await this.orders.create({
         resellerId: reseller.id,
-        productId,
-        productTitle: parsed.title,
-        sellingEtb: parsed.sellingEtb,
+        productId: draft.productId,
+        productTitle: draft.productTitle,
+        productUrl: draft.productUrl,
+        size: draft.selectedSize,
+        color: draft.selectedColor,
+        quantity: draft.quantity,
+        unitEtb: draft.unitEtb,
+        sellingEtb: draft.totalEtb,
       });
 
+      this.orderDraft.clearDraft(from.id);
+
       this.logger.log(
-        `Order #${order.id} placed by reseller ${reseller.id} (${reseller.fullName})` +
-          ` for productId=${productId} sellingEtb=${parsed.sellingEtb}`,
+        `Order #${order.id} placed by reseller ${reseller.id} (${reseller.fullName}) ` +
+          `productId=${draft.productId} size=${draft.selectedSize ?? '-'} color=${draft.selectedColor ?? '-'} ` +
+          `qty=${draft.quantity} unit=${draft.unitEtb} total=${draft.totalEtb}`,
       );
 
-      await this.updateOrderMessage(
-        ctx,
-        messageText,
-        '⏳ Order placed — awaiting confirmation',
-        Markup.inlineKeyboard([
-          Markup.button.callback('❌ Cancel order', `cancel:${order.id}`),
-        ]),
-      );
+      const summary = this.buildDraftMessage(draft) + '\n\n⏳ Order placed — awaiting confirmation';
+      try {
+        await ctx.editMessageText(summary, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            Markup.button.callback('❌ Cancel order', `cancel:${order.id}`),
+          ]),
+        });
+      } catch (err) {
+        if (!this.isMessageNotModifiedError(err)) {
+          this.fileLogger.logError('orderConfirmEdit', err);
+        }
+      }
       await this.safeAnswer(ctx, 'Order received! We will contact you shortly.', false);
     } catch (err) {
-      this.fileLogger.logError('order', err, { productId, parsed });
+      this.fileLogger.logError('orderConfirm', err, { draft });
       await this.safeAnswer(ctx, 'Could not save your order. Please try again.', true);
     }
   }
@@ -1279,17 +1373,96 @@ export class BotUpdate {
     return false;
   }
 
-  private parseDisplayedOrder(
-    messageText: string,
-  ): { title: string; sellingEtb: number } | null {
-    if (!messageText) return null;
-    const title = messageText.split('\n')[0]?.trim();
-    if (!title) return null;
-    const priceMatch = messageText.match(/Price:\s*([\d,]+)\s*ETB/i);
-    if (!priceMatch) return null;
-    const sellingEtb = parseInt(priceMatch[1].replace(/,/g, ''), 10);
-    if (!Number.isFinite(sellingEtb) || sellingEtb <= 0) return null;
-    return { title, sellingEtb };
+  private buildDraftMessage(draft: OrderDraft): string {
+    const lines = [`<b>${this.escapeHtml(draft.productTitle)}</b>`, ''];
+    lines.push(`Unit price: <b>${draft.unitEtb.toLocaleString('en-US')} ETB</b>`);
+    if (draft.selectedSize) {
+      lines.push(`Size: <b>${this.escapeHtml(draft.selectedSize)}</b>`);
+    }
+    if (draft.selectedColor) {
+      lines.push(`Color: <b>${this.escapeHtml(draft.selectedColor)}</b>`);
+    }
+    if (draft.step === 'qty' || draft.step === 'confirm') {
+      lines.push(`Quantity: <b>${draft.quantity}</b>`);
+    }
+    if (draft.step === 'confirm') {
+      lines.push('');
+      lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
+    }
+    lines.push('');
+    lines.push(`<i>${this.draftStepHint(draft)}</i>`);
+    return lines.join('\n');
+  }
+
+  private draftStepHint(draft: OrderDraft): string {
+    switch (draft.step) {
+      case 'size':
+        return 'Choose a size to continue.';
+      case 'color':
+        return 'Choose a color to continue.';
+      case 'qty':
+        return 'Choose a quantity to continue.';
+      case 'confirm':
+        return 'Review the summary, then confirm or cancel.';
+    }
+  }
+
+  private buildDraftKeyboard(draft: OrderDraft) {
+    if (draft.step === 'size') {
+      return Markup.inlineKeyboard([
+        ...this.chunkButtons(
+          draft.sizes.map((s, i) =>
+            Markup.button.callback(s.slice(0, 24), `ord:size:${i}`),
+          ),
+          4,
+        ),
+        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+      ]);
+    }
+    if (draft.step === 'color') {
+      return Markup.inlineKeyboard([
+        ...this.chunkButtons(
+          draft.colors.map((c, i) =>
+            Markup.button.callback(c.slice(0, 24), `ord:color:${i}`),
+          ),
+          3,
+        ),
+        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+      ]);
+    }
+    if (draft.step === 'qty') {
+      const choices = [1, 2, 3, 5, 10];
+      return Markup.inlineKeyboard([
+        choices.map((n) => Markup.button.callback(String(n), `ord:qty:${n}`)),
+        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+      ]);
+    }
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✓ Place order', 'ord:confirm'),
+        Markup.button.callback('✗ Cancel', 'ord:cancel'),
+      ],
+    ]);
+  }
+
+  private chunkButtons<T>(items: T[], perRow: number): T[][] {
+    const rows: T[][] = [];
+    for (let i = 0; i < items.length; i += perRow) {
+      rows.push(items.slice(i, i + perRow));
+    }
+    return rows;
+  }
+
+  private async editDraftMessage(ctx: Context, draft: OrderDraft): Promise<void> {
+    try {
+      await ctx.editMessageText(this.buildDraftMessage(draft), {
+        parse_mode: 'HTML',
+        ...this.buildDraftKeyboard(draft),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('orderDraftRender', err);
+    }
   }
 
   private stripStatusLines(text: string): string {
