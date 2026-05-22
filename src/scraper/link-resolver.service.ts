@@ -13,6 +13,21 @@ export class LinkResolverService {
     }
   }
 
+  private normalizeProductUrl(url: string): string {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+
+    if (host === 'm.shein.com' || host === 'www.shein.com') {
+      u.hostname = 'us.shein.com';
+    }
+
+    // SHEIN product pages work from the slug + product id. Dropping the mobile
+    // tracking query avoids provider failures caused by app/mobile-only params.
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  }
+
   private isSheinHost(url: string): boolean {
     try {
       const u = new URL(url);
@@ -53,8 +68,13 @@ export class LinkResolverService {
     }
 
     if (this.isProductUrl(url)) {
-      this.logger.log(`Got product URL: ${url}`);
-      return url;
+      const normalized = this.normalizeProductUrl(url);
+      this.logger.log(
+        normalized === url
+          ? `Got product URL: ${url}`
+          : `Normalized product URL: ${url} -> ${normalized}`,
+      );
+      return normalized;
     }
 
     if (this.isShareLink(url)) {
