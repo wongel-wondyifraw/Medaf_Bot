@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration, { AppConfig } from './config/configuration';
 import { BotModule } from './bot/bot.module';
 import { buildTypeOrmOptions } from './database/typeorm-options';
+import { HealthController } from './health/health.controller';
 
 @Module({
   imports: [
@@ -20,5 +21,6 @@ import { buildTypeOrmOptions } from './database/typeorm-options';
     }),
     BotModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}
