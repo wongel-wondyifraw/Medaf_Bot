@@ -55,6 +55,51 @@ export class ScraperapiProvider implements ScrapeProvider {
     return params;
   }
 
+  private candidateUrls(url: string): string[] {
+    const parsed = new URL(url);
+    parsed.search = '';
+    parsed.hash = '';
+    const cleaned = parsed.toString();
+
+    if (parsed.hostname.toLowerCase() !== 'm.shein.com') {
+      return [cleaned];
+    }
+
+    const desktop = new URL(cleaned);
+    desktop.hostname = 'us.shein.com';
+
+    // ScraperAPI often rejects m.shein.com as a protected/mobile domain.
+    // Since users in Ethiopia commonly paste mobile links, try the equivalent
+    // desktop host first and only fall back to mobile if desktop fails.
+    return [desktop.toString(), cleaned];
+  }
+
+  private async fetchMarkdown(apiKey: string, url: string): Promise<string> {
+    const parsed = new URL(url);
+    const country = this.pickCountry(parsed.hostname);
+    const params = this.buildParams(apiKey, url, country);
+
+    try {
+      const res = await axios.get<string>(SCRAPERAPI_BASE, {
+        params,
+        timeout: 45000,
+        validateStatus: () => true,
+      });
+      if (res.status >= 400) throw new Error(this.interpretError(res.status, res.data));
+      return typeof res.data === 'string' ? res.data : String(res.data);
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      if (e.message && e.message.startsWith('ScraperAPI')) throw err;
+      const code = e.code || '';
+      if (['ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code)) {
+        const wrapped = new Error(`Network error reaching ScraperAPI (${code}).`);
+        (wrapped as { code?: string }).code = code;
+        throw wrapped;
+      }
+      throw new Error(`ScraperAPI request failed: ${e.message}`);
+    }
+  }
+
   private interpretError(status: number, body: unknown): string {
     const bodyText = typeof body === 'string' ? body : JSON.stringify(body || {});
     const lower = bodyText.toLowerCase();
@@ -180,29 +225,20 @@ export class ScraperapiProvider implements ScrapeProvider {
     const apiKey = cfg.key;
     if (!apiKey) throw new Error('SCRAPERAPI_KEY is missing from .env.');
 
-    const parsed = new URL(url);
-    const country = this.pickCountry(parsed.hostname);
-    const params = this.buildParams(apiKey, url, country);
-
     let body: string;
-    try {
-      const res = await axios.get<string>(SCRAPERAPI_BASE, {
-        params,
-        timeout: 90000,
-        validateStatus: () => true,
-      });
-      if (res.status >= 400) throw new Error(this.interpretError(res.status, res.data));
-      body = typeof res.data === 'string' ? res.data : String(res.data);
-    } catch (err) {
-      const e = err as { code?: string; message?: string };
-      if (e.message && e.message.startsWith('ScraperAPI')) throw err;
-      const code = e.code || '';
-      if (['ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code)) {
-        const wrapped = new Error(`Network error reaching ScraperAPI (${code}).`);
-        (wrapped as { code?: string }).code = code;
-        throw wrapped;
+    let scrapedUrl = url;
+    const errors: string[] = [];
+    for (const candidate of this.candidateUrls(url)) {
+      try {
+        body = await this.fetchMarkdown(apiKey, candidate);
+        scrapedUrl = candidate;
+        break;
+      } catch (err) {
+        errors.push(`${candidate}: ${(err as Error).message}`);
       }
-      throw new Error(`ScraperAPI request failed: ${e.message}`);
+    }
+    if (!body!) {
+      throw new Error(`ScraperAPI failed for all URL variants.\n${errors.join('\n')}`);
     }
 
     if (!body || body.length < 100) throw new Error('ScraperAPI returned an empty page.');
@@ -210,8 +246,10 @@ export class ScraperapiProvider implements ScrapeProvider {
     const priceInfo = this.extractPrice(body);
     if (!priceInfo) throw new Error('ScraperAPI fetched the page but no price could be parsed.');
 
+    const parsed = new URL(scrapedUrl);
+
     return {
-      title: this.extractTitle(body, url),
+      title: this.extractTitle(body, scrapedUrl),
       price: priceInfo.value,
       priceRaw: priceInfo.raw,
       priceUsd: null,
@@ -222,7 +260,7 @@ export class ScraperapiProvider implements ScrapeProvider {
       currency: inferCurrency(priceInfo.raw),
       inStock: this.extractStock(body),
       image: null,
-      productId: this.extractProductId(url),
+      productId: this.extractProductId(scrapedUrl),
       domain: parsed.hostname.toLowerCase(),
       source: 'scraperapi',
       sizes: this.extractSizes(body),
