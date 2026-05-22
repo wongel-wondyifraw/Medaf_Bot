@@ -526,32 +526,6 @@ export class BotUpdate {
   }
 
   @Action(/^admin:cat:(\d+)$/)
-  async onAdminCategoryDetail(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const categoryId = parseInt(match?.[1] || '0', 10);
-    if (!categoryId) {
-      await this.safeAnswer(ctx, 'Invalid category.', true);
-      return;
-    }
-    await this.safeAnswer(ctx, '', false);
-    try {
-      const category = await this.categories.findById(categoryId);
-      if (!category) {
-        await this.safeAnswer(ctx, 'Category not found.', true);
-        return;
-      }
-      await ctx.editMessageText(this.buildCategoryDetailMessage(category), {
-        parse_mode: 'HTML',
-        ...this.categoryDetailKeyboard(category),
-      });
-    } catch (err) {
-      if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminCategoryDetail', err, { categoryId });
-    }
-  }
-
-  @Action(/^admin:cat:edit:(\d+)$/)
   async onAdminCategoryEdit(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
     const from = ctx.from;
@@ -567,19 +541,66 @@ export class BotUpdate {
       await this.safeAnswer(ctx, 'Category not found.', true);
       return;
     }
+
     this.adminAuth.setPending(from.id, 'edit-category-cost');
     this.categoryEditState.setPending(from.id, categoryId);
+
     await this.safeAnswer(ctx, '', false);
-    await ctx.reply(
-      `Enter the new shipping cost (ETB) for <b>${this.escapeHtml(category.name)}</b>.\n` +
-        `Send <code>0</code> for free shipping, or send <code>clear</code> to remove the cost.`,
-      { parse_mode: 'HTML' },
-    );
+
+    const currentLine =
+      category.shippingCost == null
+        ? '<i>not set</i>'
+        : `<b>${category.shippingCost.toLocaleString('en-US')} ETB</b>`;
+
+    const body =
+      `<b>📂 ${this.escapeHtml(category.name)}</b>\n` +
+      `Current shipping cost: ${currentLine}\n\n` +
+      'Send the new shipping cost as a number, or use a button below.';
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🗑 Clear cost', `admin:cat:clear:${category.id}`),
+        Markup.button.callback('← Cancel', 'admin:cat:cancel'),
+      ],
+    ]);
+
+    try {
+      await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryEdit', err, { categoryId });
+    }
+  }
+
+  @Action('admin:cat:cancel')
+  async onAdminCategoryCancel(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (from) {
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+    }
+    await this.safeAnswer(ctx, 'Cancelled.', false);
+    try {
+      const list = await this.categories.findAll();
+      await ctx.editMessageText(this.buildCategoriesMessage(list), {
+        parse_mode: 'HTML',
+        ...this.categoriesKeyboard(list),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryCancel', err);
+    }
   }
 
   @Action(/^admin:cat:clear:(\d+)$/)
   async onAdminCategoryClear(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (from) {
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+    }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const categoryId = parseInt(match?.[1] || '0', 10);
     if (!categoryId) {
@@ -593,9 +614,10 @@ export class BotUpdate {
         return;
       }
       await this.safeAnswer(ctx, `Cleared shipping cost for ${updated.name}.`, false);
-      await ctx.editMessageText(this.buildCategoryDetailMessage(updated), {
+      const list = await this.categories.findAll();
+      await ctx.editMessageText(this.buildCategoriesMessage(list), {
         parse_mode: 'HTML',
-        ...this.categoryDetailKeyboard(updated),
+        ...this.categoriesKeyboard(list),
       });
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
@@ -1246,34 +1268,6 @@ export class BotUpdate {
     }
     rows.push([Markup.button.callback('➕ Add category', 'admin:cat:add')]);
     rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
-    return Markup.inlineKeyboard(rows);
-  }
-
-  private buildCategoryDetailMessage(category: Category): string {
-    const cost =
-      category.shippingCost == null
-        ? '<i>not set</i>'
-        : `<b>${category.shippingCost.toLocaleString('en-US')} ETB</b>`;
-    return [
-      '<b>📂 Category</b>',
-      '',
-      `Name: <b>${this.escapeHtml(category.name)}</b>`,
-      `Shipping cost: ${cost}`,
-      '',
-      '<i>Choose an action below.</i>',
-    ].join('\n');
-  }
-
-  private categoryDetailKeyboard(category: Category) {
-    const rows: ReturnType<typeof Markup.button.callback>[][] = [
-      [Markup.button.callback('✏️ Set shipping cost', `admin:cat:edit:${category.id}`)],
-    ];
-    if (category.shippingCost != null) {
-      rows.push([
-        Markup.button.callback('🗑 Clear shipping cost', `admin:cat:clear:${category.id}`),
-      ]);
-    }
-    rows.push([Markup.button.callback('← Back to list', 'admin:categories')]);
     return Markup.inlineKeyboard(rows);
   }
 
