@@ -55,23 +55,36 @@ export class ScraperapiProvider implements ScrapeProvider {
     return params;
   }
 
+  private productIdFromUrl(url: string): string | null {
+    const m = url.match(/-p-(\d+)\.html/i);
+    return m ? m[1] : null;
+  }
+
+  private canonicalDesktopUrl(productId: string): string {
+    return `https://us.shein.com/Product-p-${productId}.html`;
+  }
+
   private candidateUrls(url: string): string[] {
     const parsed = new URL(url);
     parsed.search = '';
     parsed.hash = '';
     const cleaned = parsed.toString();
+    const productId = this.productIdFromUrl(cleaned);
+    const candidates: string[] = [];
 
-    if (parsed.hostname.toLowerCase() !== 'm.shein.com') {
-      return [cleaned];
+    if (parsed.hostname.toLowerCase() === 'm.shein.com') {
+      const desktop = new URL(cleaned);
+      desktop.hostname = 'us.shein.com';
+      candidates.push(desktop.toString());
     }
 
-    const desktop = new URL(cleaned);
-    desktop.hostname = 'us.shein.com';
+    if (productId) candidates.push(this.canonicalDesktopUrl(productId));
+    candidates.push(cleaned);
 
     // ScraperAPI often rejects m.shein.com as a protected/mobile domain.
-    // Since users in Ethiopia commonly paste mobile links, try the equivalent
-    // desktop host first and only fall back to mobile if desktop fails.
-    return [desktop.toString(), cleaned];
+    // Users in Ethiopia commonly paste mobile links, so try desktop variants
+    // first. Deduplicate because a desktop input may already equal a variant.
+    return [...new Set(candidates)];
   }
 
   private async fetchMarkdown(apiKey: string, url: string): Promise<string> {

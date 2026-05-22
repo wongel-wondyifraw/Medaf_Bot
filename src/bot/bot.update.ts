@@ -21,11 +21,38 @@ import {
 } from '../orders/order-draft-state.service';
 import { ResellersService } from '../resellers/resellers.service';
 import { ScraperService } from '../scraper/scraper.service';
+import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
+
+const SHEIN_BUTTON_LABEL = '🛍 Open SHEIN (US)';
+const SHEIN_BROWSE_URL = 'https://us.shein.com/';
 
 @Update()
 export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
+
+  /**
+   * Persistent bottom-of-chat keyboard that surfaces a "go to SHEIN" shortcut
+   * on every screen. We use a plain reply-keyboard button (URL buttons can
+   * only live inside inline keyboards) and intercept the label in onText to
+   * answer with an inline URL button that opens us.shein.com.
+   */
+  private sheinReplyKeyboard() {
+    return Markup.keyboard([[Markup.button.text(SHEIN_BUTTON_LABEL)]])
+      .resize()
+      .persistent();
+  }
+
+  private sheinInlineKeyboard() {
+    return Markup.inlineKeyboard([[Markup.button.url('Open us.shein.com', SHEIN_BROWSE_URL)]]);
+  }
+
+  private async replyWithSheinLink(ctx: Context): Promise<void> {
+    await ctx.reply(
+      'Tap below to open the US SHEIN site. Browse the catalog, copy the product link, then paste it back here to place an order.',
+      this.sheinInlineKeyboard(),
+    );
+  }
 
   constructor(
     private readonly resellers: ResellersService,
@@ -77,7 +104,7 @@ export class BotUpdate {
     if (reseller.isRegistered()) {
       await ctx.reply(
         `Welcome back, ${reseller.fullName}! Send me a Shein product link to get a price.`,
-        Markup.removeKeyboard(),
+        this.sheinReplyKeyboard(),
       );
       return;
     }
@@ -88,6 +115,11 @@ export class BotUpdate {
     } else {
       await ctx.reply('You are all set. Send a Shein product link.');
     }
+  }
+
+  @Command('shein')
+  async onSheinCommand(@Ctx() ctx: Context) {
+    await this.replyWithSheinLink(ctx);
   }
 
   @Command('admin')
@@ -152,7 +184,7 @@ export class BotUpdate {
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
       `Thanks, ${reseller.fullName}! Registration complete.\nSend a Shein product link to get a price.`,
-      Markup.removeKeyboard(),
+      this.sheinReplyKeyboard(),
     );
   }
 
@@ -174,6 +206,14 @@ export class BotUpdate {
     const activeDraft = this.orderDraft.getDraft(from.id);
     if (activeDraft && activeDraft.step === 'price') {
       await this.handleOrderPriceInput(ctx, from.id, activeDraft, text);
+      return;
+    }
+
+    // The persistent reply keyboard sends the button label as plain text, so
+    // intercept it here before the SHEIN URL check below (which would treat
+    // it as an invalid link because the label contains the word "SHEIN").
+    if (text === SHEIN_BUTTON_LABEL) {
+      await this.replyWithSheinLink(ctx);
       return;
     }
 
@@ -229,6 +269,7 @@ export class BotUpdate {
       });
     } catch (err) {
       this.fileLogger.logError('scrape', err, { url: text, chatId: ctx.chat?.id });
+      if (await this.tryStartFallbackOrder(ctx, from.id, text, err)) return;
       const userMessage = FileLoggerService.isNetworkError(err)
         ? 'Network error reaching the scraping provider. Make sure your internet/VPN/proxy is working and try again.'
         : `Sorry, I could not process that link.\n${(err as Error).message}`;
@@ -1023,6 +1064,92 @@ export class BotUpdate {
       parse_mode: 'HTML',
       ...this.buildDraftKeyboard(updated),
     });
+  }
+
+  private async tryStartFallbackOrder(
+    ctx: Context,
+    userId: number,
+    url: string,
+    err: unknown,
+  ): Promise<boolean> {
+    const product = this.buildFallbackProduct(url);
+    if (!product) return false;
+
+    try {
+      const totals = await this.calculator.calculateOrderTotalEtb(product);
+      const draft = this.orderDraft.setDraft(userId, {
+        productId: product.productId,
+        link: url,
+        productTitle: product.title,
+        sizes: [],
+        colors: [],
+        scrapedUnitUsd: null,
+        unitEtb: totals.sellingEtb,
+        sellingEtb: totals.sellingEtb,
+        totalEtb: totals.sellingEtb + totals.deliveryEtb,
+        deliveryEtb: totals.deliveryEtb,
+        marginPercent: totals.marginPercent,
+        rateUsed: totals.rateUsed,
+      });
+
+      await ctx.reply(
+        'The scraping provider could not return product details right now, ' +
+          'but I found the SHEIN product ID and can continue with manual USD price.\n\n' +
+          'Size/color/category metadata is unavailable for this fallback order, so default shipping is used.',
+      );
+      await ctx.reply(this.buildDraftMessage(draft), {
+        parse_mode: 'HTML',
+        ...this.buildDraftKeyboard(draft),
+      });
+      return true;
+    } catch (fallbackErr) {
+      this.fileLogger.logError('scrapeFallback', fallbackErr, {
+        url,
+        originalError: (err as Error)?.message,
+      });
+      return false;
+    }
+  }
+
+  private buildFallbackProduct(input: string): ScrapedProduct | null {
+    const match = input.match(/https?:\/\/[^\s<>"'`]+/i);
+    if (!match) return null;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(match[0]);
+    } catch {
+      return null;
+    }
+
+    if (!/(^|\.)shein\.com$/i.test(parsed.hostname)) return null;
+    const idMatch = parsed.pathname.match(/-p-(\d+)\.html$/i);
+    if (!idMatch) return null;
+
+    const slugMatch = parsed.pathname.match(/\/([^/?]+)-p-\d+\.html$/i);
+    const title = slugMatch
+      ? slugMatch[1].replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      : `SHEIN product ${idMatch[1]}`;
+
+    return {
+      title,
+      price: 0,
+      priceRaw: null,
+      priceUsd: null,
+      priceUsdRaw: null,
+      originalPrice: null,
+      originalPriceRaw: null,
+      onSale: false,
+      currency: 'USD',
+      inStock: true,
+      image: null,
+      productId: idMatch[1],
+      domain: parsed.hostname.toLowerCase(),
+      source: 'fallback',
+      sizes: [],
+      colors: [],
+      breadcrumb: [],
+    };
   }
 
   /**
