@@ -5,7 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import configuration, { AppConfig } from './config/configuration';
 import { BotModule } from './bot/bot.module';
 import { buildTypeOrmOptions } from './database/typeorm-options';
-import { HealthController } from './health/health.controller';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -19,8 +19,8 @@ import { HealthController } from './health/health.controller';
       useFactory: (config: ConfigService<AppConfig, true>) =>
         buildTypeOrmOptions(config.get('database', { infer: true })),
     }),
+    HealthModule,
     BotModule,
   ],
-  controllers: [HealthController],
 })
 export class AppModule {}
