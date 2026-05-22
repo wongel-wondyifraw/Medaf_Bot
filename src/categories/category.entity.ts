@@ -10,7 +10,7 @@ export class Category {
 
   @Column({
     type: 'numeric',
-    name: 'shippingcost',
+    name: 'shipping_cost',
     nullable: true,
     precision: 10,
     scale: 2,

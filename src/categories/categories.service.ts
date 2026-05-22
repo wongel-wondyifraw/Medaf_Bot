@@ -20,12 +20,28 @@ export class CategoriesService {
     return this.repo.findOne({ where: { id } });
   }
 
+  findByName(name: string): Promise<Category | null> {
+    return this.repo.findOne({ where: { name } });
+  }
+
+  async create(
+    name: string,
+  ): Promise<{ category?: Category; error?: 'duplicate' | 'invalid' }> {
+    const trimmed = name.trim();
+    if (trimmed.length < 1 || trimmed.length > 80) return { error: 'invalid' };
+    const existing = await this.findByName(trimmed);
+    if (existing) return { error: 'duplicate' };
+    const saved = await this.repo.save({ name: trimmed, shippingCost: null });
+    this.logger.log(`Category created: ${saved.name} (#${saved.id})`);
+    return { category: saved };
+  }
+
   async setShippingCost(id: number, cost: number | null): Promise<Category | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
     existing.shippingCost = cost;
     await this.repo.save(existing);
-    this.logger.log(`Category #${id} (${existing.name}) shippingcost set to ${cost}`);
+    this.logger.log(`Category #${id} (${existing.name}) shipping_cost set to ${cost}`);
     return existing;
   }
 }

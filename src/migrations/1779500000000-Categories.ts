@@ -8,7 +8,7 @@ export class Categories1779500000000 implements MigrationInterface {
       CREATE TABLE IF NOT EXISTS "categories" (
         "id" SERIAL NOT NULL,
         "name" TEXT NOT NULL,
-        "shippingcost" NUMERIC(10, 2) NULL,
+        "shipping_cost" NUMERIC(10, 2) NULL,
         CONSTRAINT "PK_categories" PRIMARY KEY ("id"),
         CONSTRAINT "UQ_categories_name" UNIQUE ("name")
       )

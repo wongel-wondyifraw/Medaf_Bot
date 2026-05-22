@@ -500,7 +500,29 @@ export class BotUpdate {
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('adminCategories', err);
+      const message = (err as Error)?.message || 'unknown error';
+      try {
+        await ctx.reply(
+          `Could not load categories.\n<code>${this.escapeHtml(message).slice(0, 300)}</code>`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (replyErr) {
+        this.fileLogger.logError('adminCategoriesReply', replyErr);
+      }
     }
+  }
+
+  @Action('admin:cat:add')
+  async onAdminCategoryAdd(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'add-category');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(
+      'Enter the new category name (1–80 characters).\nSend <code>cancel</code> to abort.',
+      { parse_mode: 'HTML' },
+    );
   }
 
   @Action(/^admin:cat:(\d+)$/)
@@ -655,7 +677,60 @@ export class BotUpdate {
       case 'edit-category-cost':
         await this.handleEditCategoryCost(ctx, userId, text);
         break;
+      case 'add-category':
+        await this.handleAddCategory(ctx, userId, text);
+        break;
     }
+  }
+
+  private async handleAddCategory(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const normalized = text.trim();
+    if (normalized.toLowerCase() === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Add category cancelled.');
+      return;
+    }
+
+    const result = await this.categories.create(normalized);
+    if (result.error === 'invalid') {
+      await ctx.reply('Invalid name. Enter 1–80 characters, or send "cancel".');
+      return;
+    }
+    if (result.error === 'duplicate') {
+      await ctx.reply(
+        `A category named <b>${this.escapeHtml(normalized)}</b> already exists. ` +
+          'Send a different name, or "cancel".',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    this.adminAuth.clearPending(userId);
+    const created = result.category!;
+    this.logger.log(
+      `Category created: ${created.name} (#${created.id}) by admin ${userId}`,
+    );
+    await ctx.reply(
+      `✅ Category <b>${this.escapeHtml(created.name)}</b> created. ` +
+        'Shipping cost is unset — open it from the list to set one.',
+      { parse_mode: 'HTML' },
+    );
+
+    const list = await this.categories.findAll();
+    await ctx.reply(this.buildCategoriesMessage(list), {
+      parse_mode: 'HTML',
+      ...this.categoriesKeyboard(list),
+    });
   }
 
   private async handleEditCategoryCost(
@@ -1089,6 +1164,7 @@ export class BotUpdate {
       const label = `${c.name} · ${tag}`.slice(0, 60);
       rows.push([Markup.button.callback(label, `admin:cat:${c.id}`)]);
     }
+    rows.push([Markup.button.callback('➕ Add category', 'admin:cat:add')]);
     rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
     return Markup.inlineKeyboard(rows);
   }
