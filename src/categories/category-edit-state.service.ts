@@ -7,9 +7,15 @@ interface PendingCategoryEdit {
   since: number;
 }
 
+interface PendingNewCategory {
+  name: string;
+  since: number;
+}
+
 @Injectable()
 export class CategoryEditStateService {
   private readonly state = new Map<number, PendingCategoryEdit>();
+  private readonly newNameState = new Map<number, PendingNewCategory>();
 
   setPending(userId: number, categoryId: number): void {
     this.state.set(userId, { categoryId, since: Date.now() });
@@ -27,5 +33,23 @@ export class CategoryEditStateService {
 
   clearPending(userId: number): void {
     this.state.delete(userId);
+  }
+
+  setPendingNewName(userId: number, name: string): void {
+    this.newNameState.set(userId, { name, since: Date.now() });
+  }
+
+  getPendingNewName(userId: number): string | null {
+    const entry = this.newNameState.get(userId);
+    if (!entry) return null;
+    if (Date.now() - entry.since > STATE_TTL_MS) {
+      this.newNameState.delete(userId);
+      return null;
+    }
+    return entry.name;
+  }
+
+  clearPendingNewName(userId: number): void {
+    this.newNameState.delete(userId);
   }
 }

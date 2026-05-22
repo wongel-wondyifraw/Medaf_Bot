@@ -26,13 +26,16 @@ export class CategoriesService {
 
   async create(
     name: string,
+    shippingCost: number | null = null,
   ): Promise<{ category?: Category; error?: 'duplicate' | 'invalid' }> {
     const trimmed = name.trim();
     if (trimmed.length < 1 || trimmed.length > 80) return { error: 'invalid' };
     const existing = await this.findByName(trimmed);
     if (existing) return { error: 'duplicate' };
-    const saved = await this.repo.save({ name: trimmed, shippingCost: null });
-    this.logger.log(`Category created: ${saved.name} (#${saved.id})`);
+    const saved = await this.repo.save({ name: trimmed, shippingCost });
+    this.logger.log(
+      `Category created: ${saved.name} (#${saved.id}) shipping_cost=${shippingCost ?? 'null'}`,
+    );
     return { category: saved };
   }
 

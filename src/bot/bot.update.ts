@@ -680,6 +680,9 @@ export class BotUpdate {
       case 'add-category':
         await this.handleAddCategory(ctx, userId, text);
         break;
+      case 'add-category-cost':
+        await this.handleAddCategoryCost(ctx, userId, text);
+        break;
     }
   }
 
@@ -690,6 +693,7 @@ export class BotUpdate {
   ): Promise<void> {
     if (!(await this.admins.isAdmin(userId))) {
       this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
       await ctx.reply('Admin access required.');
       return;
     }
@@ -697,16 +701,18 @@ export class BotUpdate {
     const normalized = text.trim();
     if (normalized.toLowerCase() === 'cancel') {
       this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
       await ctx.reply('Add category cancelled.');
       return;
     }
 
-    const result = await this.categories.create(normalized);
-    if (result.error === 'invalid') {
+    if (normalized.length < 1 || normalized.length > 80) {
       await ctx.reply('Invalid name. Enter 1–80 characters, or send "cancel".');
       return;
     }
-    if (result.error === 'duplicate') {
+
+    const existing = await this.categories.findByName(normalized);
+    if (existing) {
       await ctx.reply(
         `A category named <b>${this.escapeHtml(normalized)}</b> already exists. ` +
           'Send a different name, or "cancel".',
@@ -715,14 +721,88 @@ export class BotUpdate {
       return;
     }
 
+    this.categoryEditState.setPendingNewName(userId, normalized);
+    this.adminAuth.setPending(userId, 'add-category-cost');
+    await ctx.reply(
+      `Now enter the shipping cost (ETB) for <b>${this.escapeHtml(normalized)}</b>.\n` +
+        'Send <code>skip</code> to leave it unset, or <code>cancel</code> to abort.',
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  private async handleAddCategoryCost(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const name = this.categoryEditState.getPendingNewName(userId);
+    if (!name) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Add session expired. Open Categories again.');
+      return;
+    }
+
+    const normalized = text.trim().toLowerCase();
+    if (normalized === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
+      await ctx.reply('Add category cancelled.');
+      return;
+    }
+
+    const isSkip = normalized === 'skip' || normalized === 'none' || normalized === '-';
+    let cost: number | null;
+    if (isSkip) {
+      cost = null;
+    } else {
+      const parsed = parseFloat(text.replace(/,/g, ''));
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1_000_000) {
+        await ctx.reply(
+          'Invalid value. Enter a number between 0 and 1,000,000, ' +
+            'or send "skip" to leave it unset, or "cancel" to abort.',
+        );
+        return;
+      }
+      cost = parsed;
+    }
+
+    const result = await this.categories.create(name, cost);
+    if (result.error === 'invalid') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
+      await ctx.reply('Stored name became invalid. Start again from the Categories list.');
+      return;
+    }
+    if (result.error === 'duplicate') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewName(userId);
+      await ctx.reply(
+        `<b>${this.escapeHtml(name)}</b> was created elsewhere in the meantime. Try again.`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
     this.adminAuth.clearPending(userId);
+    this.categoryEditState.clearPendingNewName(userId);
+
     const created = result.category!;
+    const formatted =
+      created.shippingCost == null
+        ? 'unset'
+        : `${created.shippingCost.toLocaleString('en-US')} ETB`;
     this.logger.log(
-      `Category created: ${created.name} (#${created.id}) by admin ${userId}`,
+      `Category created: ${created.name} (#${created.id}) shipping_cost=${formatted} by admin ${userId}`,
     );
     await ctx.reply(
-      `✅ Category <b>${this.escapeHtml(created.name)}</b> created. ` +
-        'Shipping cost is unset — open it from the list to set one.',
+      `✅ Category <b>${this.escapeHtml(created.name)}</b> created with shipping cost ${formatted}.`,
       { parse_mode: 'HTML' },
     );
 
