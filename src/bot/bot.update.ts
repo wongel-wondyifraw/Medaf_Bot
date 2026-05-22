@@ -20,6 +20,13 @@ import {
   OrderDraftStateService,
 } from '../orders/order-draft-state.service';
 import { ResellersService } from '../resellers/resellers.service';
+import { LinkResolverService } from '../scraper/link-resolver.service';
+import {
+  DEFAULT_CLOTHING_SIZES,
+  extractFreeText,
+  extractSlugTitle,
+  isClothingTitle,
+} from '../scraper/manual-order.utils';
 import { ScraperService } from '../scraper/scraper.service';
 import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
@@ -61,6 +68,7 @@ export class BotUpdate {
     private readonly admins: AdminsService,
     private readonly adminAuth: AdminAuthStateService,
     private readonly scraper: ScraperService,
+    private readonly linkResolver: LinkResolverService,
     private readonly calculator: CalculatorService,
     private readonly settings: SettingsService,
     private readonly categories: CategoriesService,
@@ -240,9 +248,24 @@ export class BotUpdate {
       return;
     }
 
+    const classification = this.linkResolver.classify(text);
+
+    if (classification.kind === 'invalid') {
+      await ctx.reply(classification.reason);
+      return;
+    }
+
+    if (classification.kind === 'manual') {
+      this.logger.log(
+        `Manual order flow for telegramId=${from.id}: ${classification.reason}`,
+      );
+      await this.startManualOrder(ctx, from.id, text, classification.url, classification.productId);
+      return;
+    }
+
     try {
       await ctx.reply('Fetching product details, please wait...');
-      const product = await this.scraper.scrapeProduct(text);
+      const product = await this.scraper.scrapeProduct(classification.url);
       const totals = await this.calculator.calculateOrderTotalEtb(product);
 
       // At draft creation quantity is 1, so seller-side per-unit ETB is the
@@ -274,6 +297,88 @@ export class BotUpdate {
         ? 'Network error reaching the scraping provider. Make sure your internet/VPN/proxy is working and try again.'
         : `Sorry, I could not process that link.\n${(err as Error).message}`;
       await ctx.reply(userMessage).catch((e) => this.fileLogger.logError('reply', e));
+    }
+  }
+
+  /**
+   * Starts an order draft for a SHEIN link where scraping is unreliable or
+   * impossible (mobile m.shein.com URLs and SHEIN share links). The product
+   * name is taken from the URL slug when available, otherwise from any free
+   * text the user pasted around the link. The user supplies the USD price
+   * themselves; shipping uses the best-matching category by product title.
+   */
+  private async startManualOrder(
+    ctx: Context,
+    userId: number,
+    rawMessage: string,
+    url: string,
+    productId: string | null,
+  ): Promise<void> {
+    const freeText = extractFreeText(rawMessage);
+    const slugTitle = extractSlugTitle(url);
+    const productTitle =
+      (freeText && freeText.length >= 4 ? freeText : null) ??
+      slugTitle ??
+      (productId ? `SHEIN product ${productId}` : 'SHEIN product');
+
+    const sizes = isClothingTitle(productTitle) ? [...DEFAULT_CLOTHING_SIZES] : [];
+
+    const category = await this.categories.findBestMatchByText(productTitle);
+    const synthesized: ScrapedProduct = {
+      title: productTitle,
+      price: 0,
+      priceRaw: null,
+      priceUsd: null,
+      priceUsdRaw: null,
+      originalPrice: null,
+      originalPriceRaw: null,
+      onSale: false,
+      currency: 'USD',
+      inStock: true,
+      image: null,
+      productId,
+      domain: this.safeHostname(url),
+      source: 'manual',
+      sizes,
+      colors: [],
+      breadcrumb: category ? [category.name] : [],
+    };
+
+    const totals = await this.calculator.calculateOrderTotalEtb(synthesized);
+
+    // unitEtb/sellingEtb/totalEtb stay at 0 until the user enters the USD
+    // price on the price step — the calculator will recompute them then.
+    const draft = this.orderDraft.setDraft(userId, {
+      productId,
+      link: url,
+      productTitle,
+      sizes,
+      colors: [],
+      scrapedUnitUsd: null,
+      unitEtb: 0,
+      sellingEtb: 0,
+      totalEtb: totals.deliveryEtb,
+      deliveryEtb: totals.deliveryEtb,
+      marginPercent: totals.marginPercent,
+      rateUsed: totals.rateUsed,
+    });
+
+    this.logger.log(
+      `Manual draft for telegramId=${userId} title="${productTitle.slice(0, 60)}" ` +
+        `category="${category?.name ?? 'default'}" clothing=${sizes.length > 0}`,
+    );
+
+    await ctx.reply(this.buildDraftMessage(draft), {
+      parse_mode: 'HTML',
+      ...this.buildDraftKeyboard(draft),
+    });
+  }
+
+  private safeHostname(url: string): string {
+    try {
+      return new URL(url).hostname.toLowerCase();
+    } catch {
+      return 'shein.com';
     }
   }
 
@@ -1692,10 +1797,9 @@ export class BotUpdate {
       lines.push(`Quantity: <b>${draft.quantity}</b>`);
     }
 
-    if (draft.step === 'price') {
+    if (draft.step === 'price' && draft.scrapedUnitUsd != null) {
       lines.push('');
-      const scraped = this.formatUsd(draft.scrapedUnitUsd);
-      lines.push(`Scraped unit price: <b>${scraped}</b>`);
+      lines.push(`Scraped unit price: <b>${this.formatUsd(draft.scrapedUnitUsd)}</b>`);
     }
 
     if (draft.step === 'confirm') {
@@ -1729,10 +1833,13 @@ export class BotUpdate {
       case 'qty':
         return 'Choose a quantity to continue.';
       case 'price':
-        return (
-          'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09), ' +
-          'or tap "Use scraped" to accept the scraped value.'
-        );
+        if (draft.scrapedUnitUsd != null) {
+          return (
+            'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09), ' +
+            'or tap "Use scraped" to accept the scraped value.'
+          );
+        }
+        return 'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09).';
       case 'confirm':
         return 'Review the summary, then confirm or cancel.';
     }

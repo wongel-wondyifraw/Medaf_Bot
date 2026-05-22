@@ -1,5 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+/**
+ * Result of classifying a user-supplied SHEIN message. The bot uses this to
+ * decide whether to call the scraping providers ('scrape') or to start a
+ * manual order flow where the user supplies the USD price themselves
+ * ('manual').
+ */
+export type LinkClassification =
+  | { kind: 'scrape'; url: string }
+  | { kind: 'manual'; url: string; productId: string | null; reason: string }
+  | { kind: 'invalid'; reason: string };
+
 @Injectable()
 export class LinkResolverService {
   private readonly logger = new Logger(LinkResolverService.name);
@@ -103,5 +114,71 @@ export class LinkResolverService {
     }
 
     throw new Error('That URL does not look like a SHEIN link.');
+  }
+
+  /**
+   * Classify the user's input into the next bot action. Unlike resolve(),
+   * this never throws — it returns a discriminated result the bot can use
+   * to branch between the scraping flow and the manual flow.
+   *
+   *  - 'scrape':  full SHEIN product URL on a desktop/regional storefront.
+   *  - 'manual':  m.shein.com URL or a SHEIN share link (api-shein, shein.top,
+   *               sharejump/appjump paths) — these are unreliable to scrape,
+   *               so the bot asks the user for the USD price.
+   *  - 'invalid': not a SHEIN link or message we can act on.
+   */
+  classify(input: string): LinkClassification {
+    const url = this.extractUrl(input);
+    if (!url) {
+      return { kind: 'invalid', reason: 'No URL found in your message.' };
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { kind: 'invalid', reason: 'That does not look like a valid URL.' };
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    const isShein = /(^|\.)shein\.com$/i.test(host) || /(^|\.)shein\.top$/i.test(host);
+    if (!isShein) {
+      return { kind: 'invalid', reason: 'That URL does not look like a SHEIN link.' };
+    }
+
+    const productId = parsed.pathname.match(/-p-(\d+)\.html$/i)?.[1] ?? null;
+
+    if (this.isShareLink(url)) {
+      return {
+        kind: 'manual',
+        url,
+        productId,
+        reason: 'SHEIN share link — using manual flow.',
+      };
+    }
+
+    if (host === 'm.shein.com') {
+      return {
+        kind: 'manual',
+        url,
+        productId,
+        reason: 'Mobile SHEIN host — using manual flow (scraping is unreliable).',
+      };
+    }
+
+    if (!productId) {
+      return {
+        kind: 'invalid',
+        reason:
+          'That SHEIN link is not a product page. Send the URL of a product detail page ' +
+          '(ends with "-p-<number>.html").',
+      };
+    }
+
+    // Drop tracking query before passing to providers.
+    const cleaned = new URL(url);
+    cleaned.search = '';
+    cleaned.hash = '';
+    return { kind: 'scrape', url: cleaned.toString() };
   }
 }
