@@ -6,7 +6,7 @@ export type DraftStep = 'size' | 'color' | 'qty' | 'confirm';
 
 export interface OrderDraft {
   productId: string | null;
-  productUrl: string;
+  link: string;
   productTitle: string;
   sizes: string[];
   colors: string[];
@@ -21,7 +21,7 @@ export interface OrderDraft {
 
 export interface CreateDraftInput {
   productId: string | null;
-  productUrl: string;
+  link: string;
   productTitle: string;
   sizes: string[];
   colors: string[];
@@ -37,7 +37,7 @@ export class OrderDraftStateService {
       input.sizes.length > 0 ? 'size' : input.colors.length > 0 ? 'color' : 'qty';
     const draft: OrderDraft = {
       productId: input.productId,
-      productUrl: input.productUrl,
+      link: input.link,
       productTitle: input.productTitle,
       sizes: input.sizes,
       colors: input.colors,

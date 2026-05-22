@@ -14,6 +14,7 @@ import { Category } from '../categories/category.entity';
 import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
 import { OrdersService } from '../orders/orders.service';
+import { Order } from '../orders/order.entity';
 import {
   OrderDraft,
   OrderDraftStateService,
@@ -198,7 +199,7 @@ export class BotUpdate {
 
       const draft = this.orderDraft.setDraft(from.id, {
         productId: product.productId,
-        productUrl: text,
+        link: text,
         productTitle: product.title,
         sizes: product.sizes,
         colors: product.colors,
@@ -322,7 +323,7 @@ export class BotUpdate {
         resellerId: reseller.id,
         productId: draft.productId,
         productTitle: draft.productTitle,
-        productUrl: draft.productUrl,
+        link: draft.link,
         size: draft.selectedSize,
         color: draft.selectedColor,
         quantity: draft.quantity,
@@ -1167,14 +1168,19 @@ export class BotUpdate {
       const name = this.escapeHtml(r?.fullName || 'unknown');
       const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
       const status = this.formatStatus(o.status);
-      const price = o.sellingEtb.toLocaleString('en-US') + ' ETB';
+      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
       lines.push('');
       lines.push(`<b>Order ${idx + 1}</b>`);
-      lines.push(`  ID:     #${o.id}`);
-      lines.push(`  Name:   ${name}`);
-      lines.push(`  Phone:  ${phone}`);
-      lines.push(`  Status: ${status}`);
-      lines.push(`  Price:  ${price}`);
+      lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Product: ${title}`);
+      const variant = this.formatOrderVariant(o);
+      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
+      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
+      lines.push(`  Name:    ${name}`);
+      lines.push(`  Phone:   ${phone}`);
+      lines.push(`  Status:  ${status}`);
+      const link = this.formatOrderLink(o);
+      if (link) lines.push(`  Link:    ${link}`);
     });
 
     return lines.join('\n');
@@ -1200,15 +1206,18 @@ export class BotUpdate {
       }).reseller;
       const name = this.escapeHtml(r?.fullName || 'unknown');
       const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
-      const price = o.sellingEtb.toLocaleString('en-US') + ' ETB';
       const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
       lines.push('');
       lines.push(`<b>Order ${idx + 1}</b>`);
       lines.push(`  ID:      #${o.id}`);
       lines.push(`  Product: ${title}`);
+      const variant = this.formatOrderVariant(o);
+      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
+      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
       lines.push(`  Name:    ${name}`);
       lines.push(`  Phone:   ${phone}`);
-      lines.push(`  Price:   ${price}`);
+      const link = this.formatOrderLink(o);
+      if (link) lines.push(`  Link:    ${link}`);
     });
 
     lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
@@ -1227,6 +1236,29 @@ export class BotUpdate {
     ]);
     rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
     return Markup.inlineKeyboard(rows);
+  }
+
+  private formatOrderVariant(order: Order): string | null {
+    const parts: string[] = [];
+    if (order.size) parts.push(order.size);
+    if (order.color) parts.push(order.color);
+    if (order.quantity > 1) parts.push(`×${order.quantity}`);
+    return parts.length > 0 ? parts.join(' · ') : null;
+  }
+
+  private formatOrderPrice(order: Order): string {
+    const total = order.sellingEtb.toLocaleString('en-US') + ' ETB';
+    if (order.quantity > 1 && order.unitEtb) {
+      const unit = order.unitEtb.toLocaleString('en-US');
+      return `${unit} × ${order.quantity} = ${total}`;
+    }
+    return total;
+  }
+
+  private formatOrderLink(order: Order): string | null {
+    if (!order.link) return null;
+    const safeUrl = this.escapeHtml(order.link);
+    return `<a href="${safeUrl}">View product</a>`;
   }
 
   private formatStatus(status: string): string {

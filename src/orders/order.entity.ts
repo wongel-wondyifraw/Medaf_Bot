@@ -30,8 +30,8 @@ export class Order {
   @Column({ type: 'text', name: 'product_title' })
   productTitle!: string;
 
-  @Column({ type: 'text', nullable: true, name: 'product_url' })
-  productUrl!: string | null;
+  @Column({ type: 'text', nullable: true })
+  link!: string | null;
 
   @Column({ type: 'text', nullable: true })
   size!: string | null;

@@ -57,17 +57,43 @@ export class AdminNotificationsService {
     const previewLimit = 15;
     for (const o of orders.slice(0, previewLimit)) {
       const r = (o as unknown as { reseller?: { fullName?: string | null; phoneNumber?: string | null } }).reseller;
-      const name = r?.fullName || 'unknown';
-      const phone = r?.phoneNumber || '';
-      const title = (o.productTitle || '').slice(0, 60);
-      const price = o.sellingEtb.toLocaleString('en-US');
+      const name = this.escapeHtml(r?.fullName || 'unknown');
+      const phone = this.escapeHtml(r?.phoneNumber || '');
+      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
       const statusTag = o.status === 'pending' ? '⏳' : o.status === 'cancelled' ? '✗' : '✓';
-      lines.push(`${statusTag} <b>#${o.id}</b> ${title} — ${price} ETB`);
+
+      const total = o.sellingEtb.toLocaleString('en-US');
+      const priceLine =
+        o.quantity > 1 && o.unitEtb
+          ? `${o.unitEtb.toLocaleString('en-US')} × ${o.quantity} = ${total} ETB`
+          : `${total} ETB`;
+
+      const variantParts: string[] = [];
+      if (o.size) variantParts.push(o.size);
+      if (o.color) variantParts.push(o.color);
+      if (o.quantity > 1) variantParts.push(`×${o.quantity}`);
+      const variant = variantParts.length
+        ? this.escapeHtml(variantParts.join(' · '))
+        : null;
+
+      lines.push(`${statusTag} <b>#${o.id}</b> ${title} — ${priceLine}`);
+      if (variant) lines.push(`   ${variant}`);
       lines.push(`   by ${name}${phone ? ' (' + phone + ')' : ''}`);
+      if (o.link) {
+        lines.push(`   <a href="${this.escapeHtml(o.link)}">View product</a>`);
+      }
     }
     if (orders.length > previewLimit) {
       lines.push('', `…and ${orders.length - previewLimit} more.`);
     }
     return lines.join('\n');
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 }

@@ -7,7 +7,7 @@ export interface CreateOrderInput {
   resellerId: number;
   productId: string | null;
   productTitle: string;
-  productUrl: string | null;
+  link: string | null;
   size: string | null;
   color: string | null;
   quantity: number;

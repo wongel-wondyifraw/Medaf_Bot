@@ -6,7 +6,7 @@ export class OrderDetails1779600000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       ALTER TABLE "orders"
-        ADD COLUMN IF NOT EXISTS "product_url" TEXT NULL,
+        ADD COLUMN IF NOT EXISTS "link" TEXT NULL,
         ADD COLUMN IF NOT EXISTS "size" TEXT NULL,
         ADD COLUMN IF NOT EXISTS "color" TEXT NULL,
         ADD COLUMN IF NOT EXISTS "quantity" INTEGER NOT NULL DEFAULT 1,
@@ -21,7 +21,7 @@ export class OrderDetails1779600000000 implements MigrationInterface {
         DROP COLUMN IF EXISTS "quantity",
         DROP COLUMN IF EXISTS "color",
         DROP COLUMN IF EXISTS "size",
-        DROP COLUMN IF EXISTS "product_url"
+        DROP COLUMN IF EXISTS "link"
     `);
   }
 }
