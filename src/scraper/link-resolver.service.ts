@@ -15,14 +15,15 @@ export class LinkResolverService {
 
   private normalizeProductUrl(url: string): string {
     const u = new URL(url);
-    const host = u.hostname.toLowerCase();
 
-    if (host === 'm.shein.com' || host === 'www.shein.com') {
-      u.hostname = 'us.shein.com';
-    }
-
-    // SHEIN product pages work from the slug + product id. Dropping the mobile
-    // tracking query avoids provider failures caused by app/mobile-only params.
+    // Drop the tracking/share query (src_identifier, detailBusinessFrom, …).
+    // Those params come from the SHEIN app/share sheet and make the page
+    // slower to render on ScraperAPI. We intentionally do NOT rewrite the
+    // hostname: rewriting m.shein.com to us.shein.com produces a slug that
+    // may not exist on the US storefront, which causes SHEIN to serve a
+    // redirect/soft-404 and ScraperAPI to burn its full 90s render budget.
+    // The ScraperAPI provider already maps m.shein.com to country=us, so the
+    // mobile host scrapes correctly as-is.
     u.search = '';
     u.hash = '';
     return u.toString();
