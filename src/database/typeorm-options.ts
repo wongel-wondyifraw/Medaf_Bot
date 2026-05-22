@@ -14,6 +14,7 @@ import { HealthLog1779400000000 } from '../migrations/1779400000000-HealthLog';
 import { Categories1779500000000 } from '../migrations/1779500000000-Categories';
 import { OrderDetails1779600000000 } from '../migrations/1779600000000-OrderDetails';
 import { RenameProductUrlToLink1779700000000 } from '../migrations/1779700000000-RenameProductUrlToLink';
+import { OrderUsdPrices1779800000000 } from '../migrations/1779800000000-OrderUsdPrices';
 
 export function buildTypeOrmOptions(opts: {
   url: string;
@@ -37,6 +38,7 @@ export function buildTypeOrmOptions(opts: {
       Categories1779500000000,
       OrderDetails1779600000000,
       RenameProductUrlToLink1779700000000,
+      OrderUsdPrices1779800000000,
     ],
     synchronize: false,
     logging: opts.logging,
