@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
+import { formatGmtPlus3 } from '../common/date-format';
 import { OrdersService } from '../orders/orders.service';
 import { AdminsService } from './admins.service';
 
@@ -49,9 +50,9 @@ export class AdminNotificationsService {
   }
 
   private formatDigest(since: Date, orders: Awaited<ReturnType<OrdersService['findCreatedSince']>>): string {
-    const sinceStr = since.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    const sinceStr = formatGmtPlus3(since);
     const lines: string[] = [
-      `<b>📦 ${orders.length} new order(s) since ${sinceStr}</b>`,
+      `<b>📦 ${orders.length} new order(s) since ${this.escapeHtml(sinceStr)}</b>`,
       '',
     ];
     const previewLimit = 15;
@@ -79,6 +80,7 @@ export class AdminNotificationsService {
         : null;
 
       lines.push(`${statusTag} <b>#${o.id}</b> ${title} — ${priceLine}`);
+      lines.push(`   Placed: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
       if (variant) lines.push(`   ${variant}`);
       lines.push(`   by ${name}${phone ? ' (' + phone + ')' : ''}`);
       if (o.link) {

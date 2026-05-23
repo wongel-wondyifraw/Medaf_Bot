@@ -56,6 +56,12 @@ export interface UpdatePriceInput {
   unitEtb: number;
   sellingEtb: number;
   totalEtb: number;
+  /**
+   * The margin (%) actually applied to compute the ETB amounts above. The
+   * draft's marginPercent snapshot is rewritten so downstream code keeps
+   * matching the user-facing math.
+   */
+  marginPercent: number;
 }
 
 @Injectable()
@@ -140,6 +146,7 @@ export class OrderDraftStateService {
     draft.unitEtb = input.unitEtb;
     draft.sellingEtb = input.sellingEtb;
     draft.totalEtb = input.totalEtb;
+    draft.marginPercent = input.marginPercent;
     draft.step = 'confirm';
     draft.since = Date.now();
     return draft;

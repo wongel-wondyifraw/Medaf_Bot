@@ -7,6 +7,21 @@ import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 
 export const DEFAULT_DELIVERY_ETB = 500;
 
+/**
+ * Dynamic profit margin tiers, applied based on the unit cost price in ETB
+ * (i.e. unit USD × USD→ETB rate, BEFORE margin is added).
+ *
+ *   • cost  < 5,000 ETB        → 30%
+ *   • 5,000 ≤ cost ≤ 10,000    → 20%
+ *   • cost > 10,000 ETB        → 15%
+ */
+export function resolveDynamicMarginPercent(unitCostEtb: number): number {
+  if (!Number.isFinite(unitCostEtb) || unitCostEtb <= 0) return 30;
+  if (unitCostEtb < 5000) return 30;
+  if (unitCostEtb <= 10000) return 20;
+  return 15;
+}
+
 export interface OrderTotal {
   totalEtb: number;
   sellingEtb: number;
@@ -103,12 +118,6 @@ export class CalculatorService {
     product: ScrapedProduct,
     opts: CalculateOptions = {},
   ): Promise<OrderTotal> {
-    const pricing = this.config.get('pricing', { infer: true });
-    const margin = await this.settings.getNumber(
-      SETTING_KEYS.PROFIT_MARGIN,
-      pricing.profitMarginPercent,
-    );
-
     const categoryMatch = await this.resolveCategoryShipping(product);
     const delivery = categoryMatch ? categoryMatch.shippingEtb : DEFAULT_DELIVERY_ETB;
     if (categoryMatch) {
@@ -152,6 +161,12 @@ export class CalculatorService {
         'No ETB exchange rate configured. Set USD_TO_ETB from the admin panel or in .env.',
       );
     }
+
+    // Tiered margin is driven by the per-unit cost in ETB (pre-margin).
+    // foreignPrice may be in USD/EUR/GBP, so we use the resolved rate to
+    // approximate the cost ETB regardless of source currency.
+    const unitCostEtb = foreignPrice * rate;
+    const margin = resolveDynamicMarginPercent(unitCostEtb);
 
     const sellingForeign = foreignPrice * (1 + margin / 100);
     const sellingEtb = sellingForeign * rate;

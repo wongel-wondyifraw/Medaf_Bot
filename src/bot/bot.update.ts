@@ -7,10 +7,14 @@ import {
   AdminAuthStateService,
   PendingAction,
 } from '../admins/admin-auth-state.service';
-import { CalculatorService } from '../calculator/calculator.service';
+import {
+  CalculatorService,
+  resolveDynamicMarginPercent,
+} from '../calculator/calculator.service';
 import { CategoriesService } from '../categories/categories.service';
 import { CategoryEditStateService } from '../categories/category-edit-state.service';
 import { Category } from '../categories/category.entity';
+import { formatGmtPlus3 } from '../common/date-format';
 import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
 import { OrdersService } from '../orders/orders.service';
@@ -31,35 +35,9 @@ import { ScraperService } from '../scraper/scraper.service';
 import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 
-const SHEIN_BUTTON_LABEL = '🛍 Open SHEIN (US)';
-const SHEIN_BROWSE_URL = 'https://us.shein.com/';
-
 @Update()
 export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
-
-  /**
-   * Persistent bottom-of-chat keyboard that surfaces a "go to SHEIN" shortcut
-   * on every screen. We use a plain reply-keyboard button (URL buttons can
-   * only live inside inline keyboards) and intercept the label in onText to
-   * answer with an inline URL button that opens us.shein.com.
-   */
-  private sheinReplyKeyboard() {
-    return Markup.keyboard([[Markup.button.text(SHEIN_BUTTON_LABEL)]])
-      .resize()
-      .persistent();
-  }
-
-  private sheinInlineKeyboard() {
-    return Markup.inlineKeyboard([[Markup.button.url('Open us.shein.com', SHEIN_BROWSE_URL)]]);
-  }
-
-  private async replyWithSheinLink(ctx: Context): Promise<void> {
-    await ctx.reply(
-      'Tap below to open the US SHEIN site. Browse the catalog, copy the product link, then paste it back here to place an order.',
-      this.sheinInlineKeyboard(),
-    );
-  }
 
   constructor(
     private readonly resellers: ResellersService,
@@ -112,7 +90,7 @@ export class BotUpdate {
     if (reseller.isRegistered()) {
       await ctx.reply(
         `Welcome back, ${reseller.fullName}! Send me a Shein product link to get a price.`,
-        this.sheinReplyKeyboard(),
+        Markup.removeKeyboard(),
       );
       return;
     }
@@ -123,11 +101,6 @@ export class BotUpdate {
     } else {
       await ctx.reply('You are all set. Send a Shein product link.');
     }
-  }
-
-  @Command('shein')
-  async onSheinCommand(@Ctx() ctx: Context) {
-    await this.replyWithSheinLink(ctx);
   }
 
   @Command('admin')
@@ -155,20 +128,21 @@ export class BotUpdate {
     const from = ctx.from;
     if (!from) return;
 
+    this.adminAuth.clearPending(from.id);
+
     const isAdmin = await this.admins.isAdmin(from.id);
     if (!isAdmin) {
       await ctx.reply('You are not an admin.');
       return;
     }
 
-    const password = this.config.get('adminPassword', { infer: true });
-    if (!password) {
-      await ctx.reply('Admin access is not configured on this bot.');
-      return;
+    const removed = await this.admins.deleteByTelegramId(from.id);
+    if (removed) {
+      this.logger.log(`Admin revoked: telegramId=${from.id}`);
+      await ctx.reply('✅ Your admin access has been revoked.');
+    } else {
+      await ctx.reply('You were not in the admin list.');
     }
-
-    this.adminAuth.setPending(from.id, 'admin-revoke');
-    await ctx.reply('🔓 Revoke admin access\n\nEnter the admin password to confirm:');
   }
 
   @On('contact')
@@ -192,7 +166,7 @@ export class BotUpdate {
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
       `Thanks, ${reseller.fullName}! Registration complete.\nSend a Shein product link to get a price.`,
-      this.sheinReplyKeyboard(),
+      Markup.removeKeyboard(),
     );
   }
 
@@ -214,14 +188,6 @@ export class BotUpdate {
     const activeDraft = this.orderDraft.getDraft(from.id);
     if (activeDraft && activeDraft.step === 'price') {
       await this.handleOrderPriceInput(ctx, from.id, activeDraft, text);
-      return;
-    }
-
-    // The persistent reply keyboard sends the button label as plain text, so
-    // intercept it here before the SHEIN URL check below (which would treat
-    // it as an invalid link because the label contains the word "SHEIN").
-    if (text === SHEIN_BUTTON_LABEL) {
-      await this.replyWithSheinLink(ctx);
       return;
     }
 
@@ -621,16 +587,6 @@ export class BotUpdate {
     }
   }
 
-  @Action('admin:edit:margin')
-  async onEditMargin(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (!from) return;
-    this.adminAuth.setPending(from.id, 'edit-margin');
-    await this.safeAnswer(ctx, '', false);
-    await ctx.reply('Enter new profit margin (%), e.g. 30:');
-  }
-
   @Action('admin:edit:delivery')
   async onEditDelivery(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -949,17 +905,6 @@ export class BotUpdate {
       case 'admin-grant':
         await this.handleAdminGrant(ctx, userId, username, text);
         break;
-      case 'admin-revoke':
-        await this.handleAdminRevoke(ctx, userId, text);
-        break;
-      case 'edit-margin':
-        await this.handleSettingValue(ctx, userId, SETTING_KEYS.PROFIT_MARGIN, text, {
-          min: 0,
-          max: 500,
-          label: 'Profit margin',
-          suffix: '%',
-        });
-        break;
       case 'edit-delivery':
         await this.handleSettingValue(ctx, userId, SETTING_KEYS.DELIVERY_ETB, text, {
           min: 0,
@@ -1167,8 +1112,13 @@ export class BotUpdate {
     draft: OrderDraft,
     userUnitUsd: number,
   ): OrderDraft | null {
+    // Recompute the margin from the user-supplied USD price so the tier (30/
+    // 20/15%) reflects the actual unit cost in ETB rather than the placeholder
+    // value snapshotted at draft creation time (when USD was 0).
+    const unitCostEtb = userUnitUsd * draft.rateUsed;
+    const margin = resolveDynamicMarginPercent(unitCostEtb);
     const sellingPerUnit = Math.round(
-      userUnitUsd * (1 + draft.marginPercent / 100) * draft.rateUsed,
+      userUnitUsd * (1 + margin / 100) * draft.rateUsed,
     );
     const sellingTotal = sellingPerUnit * draft.quantity;
     const total = sellingTotal + draft.deliveryEtb;
@@ -1177,6 +1127,7 @@ export class BotUpdate {
       unitEtb: sellingPerUnit,
       sellingEtb: sellingTotal,
       totalEtb: total,
+      marginPercent: margin,
     });
   }
 
@@ -1277,34 +1228,6 @@ export class BotUpdate {
     this.logger.log(`Admin granted to telegramId=${userId}`);
     await ctx.reply('✅ Admin access granted.');
     await this.sendAdminMenu(ctx);
-  }
-
-  private async handleAdminRevoke(
-    ctx: Context,
-    userId: number,
-    text: string,
-  ): Promise<void> {
-    const expected = this.config.get('adminPassword', { infer: true });
-    if (!expected) {
-      this.adminAuth.clearPending(userId);
-      await ctx.reply('Admin access is not configured on this bot.');
-      return;
-    }
-
-    if (text !== expected) {
-      this.adminAuth.clearPending(userId);
-      await ctx.reply('❌ Wrong password.');
-      return;
-    }
-
-    const removed = await this.admins.deleteByTelegramId(userId);
-    this.adminAuth.clearPending(userId);
-    if (removed) {
-      this.logger.log(`Admin revoked: telegramId=${userId}`);
-      await ctx.reply('✅ Your admin access has been revoked.');
-    } else {
-      await ctx.reply('You were not in the admin list.');
-    }
   }
 
   private async handleSettingValue(
@@ -1431,6 +1354,7 @@ export class BotUpdate {
       lines.push('');
       lines.push(`<b>Order ${idx + 1}</b>`);
       lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
       lines.push(`  Product: ${title}`);
       const variant = this.formatOrderVariant(o);
       if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
@@ -1469,6 +1393,7 @@ export class BotUpdate {
       lines.push('');
       lines.push(`<b>Order ${idx + 1}</b>`);
       lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
       lines.push(`  Product: ${title}`);
       const variant = this.formatOrderVariant(o);
       if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
@@ -1575,10 +1500,6 @@ export class BotUpdate {
 
   private async buildSettingsMessage(): Promise<string> {
     const pricing = this.config.get('pricing', { infer: true });
-    const margin = await this.settings.getNumber(
-      SETTING_KEYS.PROFIT_MARGIN,
-      pricing.profitMarginPercent,
-    );
     const delivery = await this.settings.getNumber(
       SETTING_KEYS.DELIVERY_ETB,
       pricing.deliveryCostEtb,
@@ -1590,7 +1511,10 @@ export class BotUpdate {
       '<b>⚙️ Settings</b>',
       '',
       '<b>Pricing</b> (tap a button to edit)',
-      `• Profit margin: <b>${margin}%</b>`,
+      '• Profit margin (dynamic, per unit ETB):',
+      '   – &lt; 5,000 ETB → <b>30%</b>',
+      '   – 5,000–10,000 ETB → <b>20%</b>',
+      '   – &gt; 10,000 ETB → <b>15%</b>',
       `• Delivery fee: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       '',
@@ -1614,10 +1538,9 @@ export class BotUpdate {
     const adminList = await this.admins.findAll();
     const rows: ReturnType<typeof Markup.button.callback>[][] = [
       [
-        Markup.button.callback('✏️ Margin %', 'admin:edit:margin'),
         Markup.button.callback('✏️ Delivery', 'admin:edit:delivery'),
+        Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
-      [Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
     ];
@@ -1704,23 +1627,7 @@ export class BotUpdate {
       lines.push(`Quantity: <b>${draft.quantity}</b>`);
     }
 
-    if (draft.step === 'price' && draft.scrapedUnitUsd != null) {
-      lines.push('');
-      lines.push(`Scraped unit price: <b>${this.formatUsd(draft.scrapedUnitUsd)}</b>`);
-    }
-
     if (draft.step === 'confirm') {
-      lines.push('');
-      const used = draft.userUnitUsd ?? draft.scrapedUnitUsd;
-      lines.push(`Unit price (USD): <b>${this.formatUsd(used)}</b>`);
-      if (
-        draft.userUnitUsd != null &&
-        draft.scrapedUnitUsd != null &&
-        Math.abs(draft.userUnitUsd - draft.scrapedUnitUsd) >= 0.01
-      ) {
-        lines.push(`Scraped was: <i>${this.formatUsd(draft.scrapedUnitUsd)}</i>`);
-      }
-      lines.push(`Unit price (ETB): <b>${draft.unitEtb.toLocaleString('en-US')} ETB</b>`);
       lines.push('');
       lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }

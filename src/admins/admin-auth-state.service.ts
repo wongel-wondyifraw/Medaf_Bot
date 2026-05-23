@@ -4,8 +4,6 @@ const STATE_TTL_MS = 5 * 60 * 1000;
 
 export type PendingAction =
   | 'admin-grant'
-  | 'admin-revoke'
-  | 'edit-margin'
   | 'edit-delivery'
   | 'edit-rate'
   | 'add-admin'
