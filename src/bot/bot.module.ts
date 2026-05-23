@@ -6,6 +6,7 @@ import { CalculatorModule } from '../calculator/calculator.module';
 import { FileLoggerService } from '../common/logger.service';
 import { AdminsModule } from '../admins/admins.module';
 import { CategoriesModule } from '../categories/categories.module';
+import { HealthModule } from '../health/health.module';
 import { OrdersModule } from '../orders/orders.module';
 import { ResellersModule } from '../resellers/resellers.module';
 import { ScraperModule } from '../scraper/scraper.module';
@@ -21,6 +22,7 @@ import { BotUpdate } from './bot.update';
     CalculatorModule,
     SettingsModule,
     CategoriesModule,
+    HealthModule,
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -6,6 +6,12 @@ export interface AppConfig {
   proxyUrl: string;
   adminChatId: string;
   adminPassword: string;
+  /**
+   * Telegram chat ID that receives the daily health report and is the only
+   * user who sees the "🩺 Health Report" button in the admin panel. Defaults
+   * to the bot owner's Telegram ID; override via env in dev / staging.
+   */
+  healthReportChatId: string;
   database: {
     url: string;
     logging: boolean;
@@ -60,6 +66,7 @@ export default function configuration(): AppConfig {
     proxyUrl: envStr('PROXY_URL'),
     adminChatId: envStr('ADMIN_CHAT_ID'),
     adminPassword: envStr('ADMIN_PASSWORD'),
+    healthReportChatId: envStr('HEALTH_REPORT_CHAT_ID', '1041346091'),
     database: {
       url: envStr('DATABASE_URL'),
       logging: envBool('TYPEORM_LOGGING'),

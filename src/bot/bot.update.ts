@@ -17,6 +17,8 @@ import { Category } from '../categories/category.entity';
 import { formatGmtPlus3 } from '../common/date-format';
 import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
+import { HealthNotificationsService } from '../health/health-notifications.service';
+import { HealthReportService } from '../health/health-report.service';
 import { OrdersService } from '../orders/orders.service';
 import { Order } from '../orders/order.entity';
 import {
@@ -52,6 +54,8 @@ export class BotUpdate {
     private readonly categories: CategoriesService,
     private readonly categoryEditState: CategoryEditStateService,
     private readonly fileLogger: FileLoggerService,
+    private readonly healthReport: HealthReportService,
+    private readonly healthNotifications: HealthNotificationsService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
@@ -66,7 +70,8 @@ export class BotUpdate {
 
   private askForName(ctx: Context) {
     return ctx.reply(
-      'Welcome! Before you can use the bot, please complete a quick registration.\n\n' +
+      'Welcome to Medaf SHEIN orders.\n\n' +
+        'Before placing your first order, please complete a quick registration.\n\n' +
         'What is your full name?',
       Markup.removeKeyboard(),
     );
@@ -74,7 +79,7 @@ export class BotUpdate {
 
   private askForPhone(ctx: Context) {
     return ctx.reply(
-      'Thanks! Now please share your phone number using the button below.',
+      'Thank you. Please share your phone number using the button below to finish registration.',
       Markup.keyboard([Markup.button.contactRequest('📱 Share my phone number')])
         .oneTime()
         .resize(),
@@ -89,7 +94,7 @@ export class BotUpdate {
     if (!reseller) return;
     if (reseller.isRegistered()) {
       await ctx.reply(
-        `Welcome back, ${reseller.fullName}! Send me a Shein product link to get a price.`,
+        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
         Markup.removeKeyboard(),
       );
       return;
@@ -99,7 +104,9 @@ export class BotUpdate {
     } else if (!reseller.phoneNumber) {
       await this.askForPhone(ctx);
     } else {
-      await ctx.reply('You are all set. Send a Shein product link.');
+      await ctx.reply(
+        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
+      );
     }
   }
 
@@ -165,7 +172,7 @@ export class BotUpdate {
 
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
-      `Thanks, ${reseller.fullName}! Registration complete.\nSend a Shein product link to get a price.`,
+      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
       Markup.removeKeyboard(),
     );
   }
@@ -215,7 +222,7 @@ export class BotUpdate {
     }
 
     if (!/shein/i.test(text)) {
-      await ctx.reply('Please send a SHEIN product link (the URL that ends with "-p-<number>.html").');
+      await ctx.reply('Please send a valid SHEIN product link.');
       return;
     }
 
@@ -614,13 +621,33 @@ export class BotUpdate {
     await this.safeAnswer(ctx, 'Loading report...', false);
     try {
       const report = await this.orders.getReport();
+      const from = ctx.from;
       await ctx.editMessageText(this.buildReportMessage(report), {
         parse_mode: 'HTML',
-        ...this.adminMenuKeyboard(),
+        ...this.adminMenuKeyboard(from?.id),
       });
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('adminReport', err);
+    }
+  }
+
+  @Action('admin:health')
+  async onAdminHealth(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    if (!this.healthReport.isHealthReportRecipient(from.id)) {
+      await this.safeAnswer(ctx, 'Health reports are restricted.', true);
+      return;
+    }
+    await this.safeAnswer(ctx, 'Generating health report…', false);
+    try {
+      const body = await this.healthReport.buildReportMessage();
+      await ctx.reply(body, { parse_mode: 'HTML' });
+    } catch (err) {
+      this.fileLogger.logError('adminHealth', err);
+      await ctx.reply('Could not generate the health report. Check server logs.');
     }
   }
 
@@ -922,9 +949,10 @@ export class BotUpdate {
     if (!(await this.requireAdmin(ctx))) return;
     await this.safeAnswer(ctx, 'Menu', false);
     try {
-      await ctx.editMessageText(this.buildAdminMenuText(), {
+      const from = ctx.from;
+      await ctx.editMessageText(this.buildAdminMenuText(from?.id), {
         parse_mode: 'HTML',
-        ...this.adminMenuKeyboard(),
+        ...this.adminMenuKeyboard(from?.id),
       });
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
@@ -1449,32 +1477,42 @@ export class BotUpdate {
   }
 
   private async sendAdminMenu(ctx: Context): Promise<void> {
-    await ctx.reply(this.buildAdminMenuText(), {
+    const from = ctx.from;
+    await ctx.reply(this.buildAdminMenuText(from?.id), {
       parse_mode: 'HTML',
-      ...this.adminMenuKeyboard(),
+      ...this.adminMenuKeyboard(from?.id),
     });
   }
 
-  private adminMenuKeyboard() {
-    return Markup.inlineKeyboard([
+  private adminMenuKeyboard(telegramId?: number) {
+    const rows: ReturnType<typeof Markup.button.callback>[][] = [
       [
         Markup.button.callback('📊 Report', 'admin:report'),
         Markup.button.callback('📦 Pending', 'admin:pending'),
       ],
-      [Markup.button.callback('⚙️ Settings', 'admin:settings')],
-      [Markup.button.callback('✕ Close', 'admin:close')],
-    ]);
+    ];
+    if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
+      rows.push([Markup.button.callback('🩺 Health Report', 'admin:health')]);
+    }
+    rows.push([Markup.button.callback('⚙️ Settings', 'admin:settings')]);
+    rows.push([Markup.button.callback('✕ Close', 'admin:close')]);
+    return Markup.inlineKeyboard(rows);
   }
 
-  private buildAdminMenuText(): string {
-    return (
-      '<b>🔐 Admin panel</b>\n\n' +
-      'Choose an option:\n' +
-      '• <b>Report</b> — order stats and recent orders\n' +
-      '• <b>Pending</b> — mark pending orders as delivered\n' +
-      '• <b>Settings</b> — bot config and admin list\n\n' +
-      '<i>You receive new-order digests every 6 hours.</i>'
-    );
+  private buildAdminMenuText(telegramId?: number): string {
+    const lines = [
+      '<b>🔐 Admin panel</b>',
+      '',
+      'Choose an option:',
+      '• <b>Report</b> — order stats and recent orders',
+      '• <b>Pending</b> — mark pending orders as delivered',
+      '• <b>Settings</b> — bot config and admin list',
+    ];
+    if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
+      lines.splice(4, 0, '• <b>Health Report</b> — uptime, memory, critical errors');
+    }
+    lines.push('', '<i>You receive new-order digests every 6 hours.</i>');
+    return lines.join('\n');
   }
 
   private buildReportMessage(
