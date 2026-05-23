@@ -856,8 +856,11 @@ export class BotUpdate {
     const from = ctx.from;
     if (!from) return;
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const suffix = match?.[1] || '';
-    this.logger.log(`admin:cat callback userId=${from.id} suffix=${suffix}`);
+    const rawSuffix = match?.[1] || '';
+    const suffix = rawSuffix.trim();
+    this.logger.log(
+      `admin:cat callback userId=${from.id} suffix=[${suffix}] raw=[${rawSuffix}]`,
+    );
 
     if (suffix === 'add') {
       this.adminAuth.setPending(from.id, 'add-category');
@@ -886,6 +889,16 @@ export class BotUpdate {
       return;
     }
 
+    // Legacy keyboards (pre-fee/commission split) sent `clear:<id>` to wipe
+    // the single shipping cost. Treat it as "clear both" so old chat
+    // messages keep working after redeploy.
+    const legacyClearMatch = suffix.match(/^clear:(\d+)$/);
+    if (legacyClearMatch) {
+      const categoryId = parseInt(legacyClearMatch[1], 10);
+      await this.handleCategoryClear(ctx, from.id, 'both', categoryId);
+      return;
+    }
+
     const fieldMatch = suffix.match(/^(fee|comm):(\d+)$/);
     if (fieldMatch) {
       const field = fieldMatch[1] === 'comm' ? 'commission' : 'shipping fee';
@@ -903,8 +916,19 @@ export class BotUpdate {
       return;
     }
 
-    this.logger.warn(`Unknown admin:cat suffix received: ${suffix}`);
-    await this.safeAnswer(ctx, 'Unknown category action.', true);
+    this.logger.warn(
+      `Unknown admin:cat suffix: [${suffix}] raw=[${rawSuffix}] userId=${from.id}`,
+    );
+    this.fileLogger.logError(
+      'adminCategoryUnknownSuffix',
+      new Error(`Unknown admin:cat suffix: ${suffix}`),
+      { rawSuffix, suffix, userId: from.id },
+    );
+    await this.safeAnswer(
+      ctx,
+      `Unknown category action: ${suffix.slice(0, 40)}. Re-open Settings → Categories.`,
+      true,
+    );
   }
 
   private async showCategoriesList(ctx: Context): Promise<void> {
