@@ -837,46 +837,95 @@ export class BotUpdate {
     }
   }
 
-  @Action('admin:cat:add')
-  async onAdminCategoryAdd(@Ctx() ctx: Context) {
+  /**
+   * Single entry point for every callback whose data starts with `admin:cat:`.
+   * Dispatches internally based on the suffix so we cannot accidentally
+   * shadow one regex Action with another. The suffix grammar is:
+   *   add                       -> open "Add category" wizard
+   *   cancel                    -> exit current edit/add and return to list
+   *   <id>                      -> open detail panel for category
+   *   fee:<id>                  -> prompt to edit shipping fee
+   *   comm:<id>                 -> prompt to edit commission
+   *   clear-fee:<id>            -> set shipping fee to null
+   *   clear-comm:<id>           -> set commission to null
+   *   clear-both:<id>           -> set both columns to null
+   */
+  @Action(/^admin:cat:(.+)$/)
+  async onAdminCategoryAction(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
     const from = ctx.from;
     if (!from) return;
-    this.adminAuth.setPending(from.id, 'add-category');
-    await this.safeAnswer(ctx, '', false);
-    await ctx.reply(
-      'Enter the new category name (1–80 characters).\nSend <code>cancel</code> to abort.',
-      { parse_mode: 'HTML' },
-    );
-  }
-
-  @Action(/^admin:cat:(\d+)$/)
-  async onAdminCategoryEdit(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (from) {
-      this.adminAuth.clearPending(from.id);
-      this.categoryEditState.clearPending(from.id);
-    }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const categoryId = parseInt(match?.[1] || '0', 10);
-    if (!categoryId) {
-      await this.safeAnswer(ctx, 'Invalid category.', true);
+    const suffix = match?.[1] || '';
+    this.logger.log(`admin:cat callback userId=${from.id} suffix=${suffix}`);
+
+    if (suffix === 'add') {
+      this.adminAuth.setPending(from.id, 'add-category');
+      await this.safeAnswer(ctx, '', false);
+      await ctx.reply(
+        'Enter the new category name (1–80 characters).\nSend <code>cancel</code> to abort.',
+        { parse_mode: 'HTML' },
+      );
       return;
     }
 
-    await this.safeAnswer(ctx, '', false);
-    await this.showCategoryDetail(ctx, categoryId, 'edit');
+    if (suffix === 'cancel') {
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+      this.categoryEditState.clearPendingNewCategory(from.id);
+      await this.safeAnswer(ctx, 'Cancelled.', false);
+      await this.showCategoriesList(ctx);
+      return;
+    }
+
+    const clearMatch = suffix.match(/^clear-(fee|comm|both):(\d+)$/);
+    if (clearMatch) {
+      const field = clearMatch[1] as 'fee' | 'comm' | 'both';
+      const categoryId = parseInt(clearMatch[2], 10);
+      await this.handleCategoryClear(ctx, from.id, field, categoryId);
+      return;
+    }
+
+    const fieldMatch = suffix.match(/^(fee|comm):(\d+)$/);
+    if (fieldMatch) {
+      const field = fieldMatch[1] === 'comm' ? 'commission' : 'shipping fee';
+      const categoryId = parseInt(fieldMatch[2], 10);
+      await this.handleCategoryEditFieldPrompt(ctx, from.id, field, categoryId);
+      return;
+    }
+
+    if (/^\d+$/.test(suffix)) {
+      const categoryId = parseInt(suffix, 10);
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+      await this.safeAnswer(ctx, '', false);
+      await this.showCategoryDetail(ctx, categoryId, 'edit');
+      return;
+    }
+
+    this.logger.warn(`Unknown admin:cat suffix received: ${suffix}`);
+    await this.safeAnswer(ctx, 'Unknown category action.', true);
   }
 
-  @Action(/^admin:cat:(fee|comm):(\d+)$/)
-  async onAdminCategoryEditField(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (!from) return;
-    const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const field = match?.[1] === 'comm' ? 'commission' : 'shipping fee';
-    const categoryId = parseInt(match?.[2] || '0', 10);
+  private async showCategoriesList(ctx: Context): Promise<void> {
+    try {
+      const list = await this.categories.findAll();
+      await ctx.editMessageText(this.buildCategoriesMessage(list), {
+        parse_mode: 'HTML',
+        ...this.categoriesKeyboard(list),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('showCategoriesList', err);
+    }
+  }
+
+  private async handleCategoryEditFieldPrompt(
+    ctx: Context,
+    userId: number,
+    field: 'commission' | 'shipping fee',
+    categoryId: number,
+  ): Promise<void> {
     if (!categoryId) {
       await this.safeAnswer(ctx, 'Invalid category.', true);
       return;
@@ -888,10 +937,10 @@ export class BotUpdate {
     }
 
     this.adminAuth.setPending(
-      from.id,
+      userId,
       field === 'commission' ? 'edit-category-commission' : 'edit-category-fee',
     );
-    this.categoryEditState.setPending(from.id, categoryId);
+    this.categoryEditState.setPending(userId, categoryId);
     await this.safeAnswer(ctx, '', false);
 
     const current =
@@ -914,39 +963,14 @@ export class BotUpdate {
     }
   }
 
-  @Action('admin:cat:cancel')
-  async onAdminCategoryCancel(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (from) {
-      this.adminAuth.clearPending(from.id);
-      this.categoryEditState.clearPending(from.id);
-      this.categoryEditState.clearPendingNewCategory(from.id);
-    }
-    await this.safeAnswer(ctx, 'Cancelled.', false);
-    try {
-      const list = await this.categories.findAll();
-      await ctx.editMessageText(this.buildCategoriesMessage(list), {
-        parse_mode: 'HTML',
-        ...this.categoriesKeyboard(list),
-      });
-    } catch (err) {
-      if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminCategoryCancel', err);
-    }
-  }
-
-  @Action(/^admin:cat:clear-(fee|comm|both):(\d+)$/)
-  async onAdminCategoryClear(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (from) {
-      this.adminAuth.clearPending(from.id);
-      this.categoryEditState.clearPending(from.id);
-    }
-    const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const field = match?.[1] || 'both';
-    const categoryId = parseInt(match?.[2] || '0', 10);
+  private async handleCategoryClear(
+    ctx: Context,
+    userId: number,
+    field: 'fee' | 'comm' | 'both',
+    categoryId: number,
+  ): Promise<void> {
+    this.adminAuth.clearPending(userId);
+    this.categoryEditState.clearPending(userId);
     if (!categoryId) {
       await this.safeAnswer(ctx, 'Invalid category.', true);
       return;
