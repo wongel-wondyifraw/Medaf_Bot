@@ -8,17 +8,19 @@ import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 export const DEFAULT_DELIVERY_ETB = 500;
 
 /**
- * Dynamic profit margin tiers, applied based on the unit cost price in ETB
- * (i.e. unit USD × USD→ETB rate, BEFORE margin is added).
+ * Dynamic profit margin tiers, picked from the per-unit subtotal in ETB
+ * (unit USD × USD→ETB rate + category delivery, BEFORE margin is added).
+ * The chosen percentage is then applied to that same subtotal — i.e.
+ * delivery is marked up alongside the product.
  *
- *   • cost  < 5,000 ETB        → 30%
- *   • 5,000 ≤ cost ≤ 10,000    → 20%
- *   • cost > 10,000 ETB        → 15%
+ *   • subtotal  < 3,000 ETB         → 30%
+ *   • 3,000 ≤ subtotal ≤ 10,000    → 20%
+ *   • subtotal > 10,000 ETB         → 15%
  */
-export function resolveDynamicMarginPercent(unitCostEtb: number): number {
-  if (!Number.isFinite(unitCostEtb) || unitCostEtb <= 0) return 30;
-  if (unitCostEtb < 5000) return 30;
-  if (unitCostEtb <= 10000) return 20;
+export function resolveDynamicMarginPercent(unitSubtotalEtb: number): number {
+  if (!Number.isFinite(unitSubtotalEtb) || unitSubtotalEtb <= 0) return 30;
+  if (unitSubtotalEtb < 3000) return 30;
+  if (unitSubtotalEtb <= 10000) return 20;
   return 15;
 }
 
@@ -77,24 +79,37 @@ export class CalculatorService {
   ) {}
 
   /**
-   * Resolves the shipping cost for a product by matching its breadcrumb
+   * Resolves per-item delivery for a product by matching its breadcrumb
    * against the `categories` table. Walks the breadcrumb from most-specific
-   * to least-specific and returns the first category that has a non-null
-   * shipping_cost. Returns null when no category match has a configured cost.
+   * to least-specific and returns the first category that has a configured
+   * shipping fee or commission. Returns null when no category match has costs.
    */
   private async resolveCategoryShipping(
     product: ScrapedProduct,
   ): Promise<{ name: string; shippingEtb: number } | null> {
     const breadcrumb = product.breadcrumb ?? [];
-    if (breadcrumb.length === 0) return null;
     for (let i = breadcrumb.length - 1; i >= 0; i--) {
       const name = breadcrumb[i]?.trim();
       if (!name) continue;
       const category = await this.categoriesService.findByName(name);
-      if (category && category.shippingCost != null) {
-        return { name: category.name, shippingEtb: category.shippingCost };
+      if (category) {
+        const shipping = category.shippingCost ?? 0;
+        const commission = category.commissionEtb ?? 0;
+        if (shipping + commission > 0) {
+          return { name: category.name, shippingEtb: shipping + commission };
+        }
       }
     }
+
+    const titleCategory = await this.categoriesService.findBestMatchByText(product.title);
+    if (titleCategory) {
+      const shipping = titleCategory.shippingCost ?? 0;
+      const commission = titleCategory.commissionEtb ?? 0;
+      if (shipping + commission > 0) {
+        return { name: titleCategory.name, shippingEtb: shipping + commission };
+      }
+    }
+
     return null;
   }
 
@@ -162,19 +177,20 @@ export class CalculatorService {
       );
     }
 
-    // Tiered margin is driven by the per-unit cost in ETB (pre-margin).
-    // foreignPrice may be in USD/EUR/GBP, so we use the resolved rate to
-    // approximate the cost ETB regardless of source currency.
+    // 1) baseEtb     = USD × rate
+    // 2) subtotal    = baseEtb + delivery        (delivery folded in first)
+    // 3) margin tier picked from subtotal
+    // 4) selling     = subtotal × (1 + margin/100)  (margin marks up delivery too)
+    // 5) total       = ceil(selling)                ("round up if necessary")
     const unitCostEtb = foreignPrice * rate;
-    const margin = resolveDynamicMarginPercent(unitCostEtb);
-
-    const sellingForeign = foreignPrice * (1 + margin / 100);
-    const sellingEtb = sellingForeign * rate;
-    const totalEtb = sellingEtb + delivery;
+    const unitSubtotalEtb = unitCostEtb + delivery;
+    const margin = resolveDynamicMarginPercent(unitSubtotalEtb);
+    const sellingEtb = unitSubtotalEtb * (1 + margin / 100);
+    const totalEtb = sellingEtb;
 
     return {
-      totalEtb: Math.round(totalEtb),
-      sellingEtb: Math.round(sellingEtb),
+      totalEtb: Math.ceil(totalEtb),
+      sellingEtb: Math.ceil(sellingEtb),
       deliveryEtb: Math.round(delivery),
       marginPercent: margin,
       rateUsed: rate,

@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ValueTransformer } from 'typeorm';
+
+const numericTransformer: ValueTransformer = {
+  to: (v: number | null | undefined): number | null => (v == null ? null : v),
+  from: (v: string | number | null): number | null =>
+    v == null ? null : typeof v === 'number' ? v : parseFloat(v),
+};
 
 @Entity('categories')
 export class Category {
@@ -14,11 +20,17 @@ export class Category {
     nullable: true,
     precision: 10,
     scale: 2,
-    transformer: {
-      to: (v: number | null | undefined): number | null =>
-        v == null ? null : v,
-      from: (v: string | null): number | null => (v == null ? null : parseFloat(v)),
-    },
+    transformer: numericTransformer,
   })
   shippingCost!: number | null;
+
+  @Column({
+    type: 'numeric',
+    name: 'commission_etb',
+    nullable: true,
+    precision: 10,
+    scale: 2,
+    transformer: numericTransformer,
+  })
+  commissionEtb!: number | null;
 }

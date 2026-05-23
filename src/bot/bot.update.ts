@@ -809,6 +809,12 @@ export class BotUpdate {
   @Action('admin:categories')
   async onAdminCategories(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (from) {
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+      this.categoryEditState.clearPendingNewCategory(from.id);
+    }
     await this.safeAnswer(ctx, 'Loading categories...', false);
     try {
       const list = await this.categories.findAll();
@@ -848,9 +854,29 @@ export class BotUpdate {
   async onAdminCategoryEdit(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
     const from = ctx.from;
-    if (!from) return;
+    if (from) {
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+    }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const categoryId = parseInt(match?.[1] || '0', 10);
+    if (!categoryId) {
+      await this.safeAnswer(ctx, 'Invalid category.', true);
+      return;
+    }
+
+    await this.safeAnswer(ctx, '', false);
+    await this.showCategoryDetail(ctx, categoryId, 'edit');
+  }
+
+  @Action(/^admin:cat:(fee|comm):(\d+)$/)
+  async onAdminCategoryEditField(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const field = match?.[1] === 'comm' ? 'commission' : 'shipping fee';
+    const categoryId = parseInt(match?.[2] || '0', 10);
     if (!categoryId) {
       await this.safeAnswer(ctx, 'Invalid category.', true);
       return;
@@ -861,33 +887,30 @@ export class BotUpdate {
       return;
     }
 
-    this.adminAuth.setPending(from.id, 'edit-category-cost');
+    this.adminAuth.setPending(
+      from.id,
+      field === 'commission' ? 'edit-category-commission' : 'edit-category-fee',
+    );
     this.categoryEditState.setPending(from.id, categoryId);
-
     await this.safeAnswer(ctx, '', false);
 
-    const currentLine =
-      category.shippingCost == null
-        ? '<i>not set</i>'
-        : `<b>${category.shippingCost.toLocaleString('en-US')} ETB</b>`;
-
+    const current =
+      field === 'commission' ? category.commissionEtb : category.shippingCost;
     const body =
-      `<b>📂 ${this.escapeHtml(category.name)}</b>\n` +
-      `Current shipping cost: ${currentLine}\n\n` +
-      'Send the new shipping cost as a number, or use a button below.';
+      `<b>✏️ ${this.escapeHtml(category.name)} — ${field}</b>\n\n` +
+      `Current: <b>${this.formatCategoryEtb(current)}</b>\n\n` +
+      'Send the new amount in ETB (example: <code>600</code>).\n' +
+      'Send <code>clear</code> to remove this value, or <code>cancel</code> to return.';
 
     const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🗑 Clear cost', `admin:cat:clear:${category.id}`),
-        Markup.button.callback('← Cancel', 'admin:cat:cancel'),
-      ],
+      [Markup.button.callback('← Back', `admin:cat:${category.id}`)],
     ]);
 
     try {
       await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminCategoryEdit', err, { categoryId });
+      this.fileLogger.logError('adminCategoryEditField', err, { categoryId, field });
     }
   }
 
@@ -898,6 +921,7 @@ export class BotUpdate {
     if (from) {
       this.adminAuth.clearPending(from.id);
       this.categoryEditState.clearPending(from.id);
+      this.categoryEditState.clearPendingNewCategory(from.id);
     }
     await this.safeAnswer(ctx, 'Cancelled.', false);
     try {
@@ -912,7 +936,7 @@ export class BotUpdate {
     }
   }
 
-  @Action(/^admin:cat:clear:(\d+)$/)
+  @Action(/^admin:cat:clear-(fee|comm|both):(\d+)$/)
   async onAdminCategoryClear(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
     const from = ctx.from;
@@ -921,26 +945,30 @@ export class BotUpdate {
       this.categoryEditState.clearPending(from.id);
     }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const categoryId = parseInt(match?.[1] || '0', 10);
+    const field = match?.[1] || 'both';
+    const categoryId = parseInt(match?.[2] || '0', 10);
     if (!categoryId) {
       await this.safeAnswer(ctx, 'Invalid category.', true);
       return;
     }
     try {
-      const updated = await this.categories.setShippingCost(categoryId, null);
+      const updated =
+        field === 'fee'
+          ? await this.categories.setShippingCost(categoryId, null)
+          : field === 'comm'
+            ? await this.categories.setCommissionEtb(categoryId, null)
+            : await this.categories.clearCosts(categoryId);
       if (!updated) {
         await this.safeAnswer(ctx, 'Category not found.', true);
         return;
       }
-      await this.safeAnswer(ctx, `Cleared shipping cost for ${updated.name}.`, false);
-      const list = await this.categories.findAll();
-      await ctx.editMessageText(this.buildCategoriesMessage(list), {
-        parse_mode: 'HTML',
-        ...this.categoriesKeyboard(list),
-      });
+      const label =
+        field === 'fee' ? 'shipping fee' : field === 'comm' ? 'commission' : 'costs';
+      await this.safeAnswer(ctx, `Cleared ${label} for ${updated.name}.`, false);
+      await this.showCategoryDetail(ctx, categoryId, 'edit');
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminCategoryClear', err, { categoryId });
+      this.fileLogger.logError('adminCategoryClear', err, { categoryId, field });
     }
   }
 
@@ -1006,13 +1034,21 @@ export class BotUpdate {
         await this.handleAddAdmin(ctx, userId, text);
         break;
       case 'edit-category-cost':
-        await this.handleEditCategoryCost(ctx, userId, text);
+      case 'edit-category-fee':
+        await this.handleEditCategoryAmount(ctx, userId, text, 'fee');
+        break;
+      case 'edit-category-commission':
+        await this.handleEditCategoryAmount(ctx, userId, text, 'commission');
         break;
       case 'add-category':
         await this.handleAddCategory(ctx, userId, text);
         break;
       case 'add-category-cost':
-        await this.handleAddCategoryCost(ctx, userId, text);
+      case 'add-category-fee':
+        await this.handleAddCategoryFee(ctx, userId, text);
+        break;
+      case 'add-category-commission':
+        await this.handleAddCategoryCommission(ctx, userId, text);
         break;
     }
   }
@@ -1024,7 +1060,7 @@ export class BotUpdate {
   ): Promise<void> {
     if (!(await this.admins.isAdmin(userId))) {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Admin access required.');
       return;
     }
@@ -1032,7 +1068,7 @@ export class BotUpdate {
     const normalized = text.trim();
     if (normalized.toLowerCase() === 'cancel') {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Add category cancelled.');
       return;
     }
@@ -1053,22 +1089,22 @@ export class BotUpdate {
     }
 
     this.categoryEditState.setPendingNewName(userId, normalized);
-    this.adminAuth.setPending(userId, 'add-category-cost');
+    this.adminAuth.setPending(userId, 'add-category-fee');
     await ctx.reply(
-      `Now enter the shipping cost (ETB) for <b>${this.escapeHtml(normalized)}</b>.\n` +
+      `Now enter the shipping fee (ETB) for <b>${this.escapeHtml(normalized)}</b>.\n` +
         'Send <code>skip</code> to leave it unset, or <code>cancel</code> to abort.',
       { parse_mode: 'HTML' },
     );
   }
 
-  private async handleAddCategoryCost(
+  private async handleAddCategoryFee(
     ctx: Context,
     userId: number,
     text: string,
   ): Promise<void> {
     if (!(await this.admins.isAdmin(userId))) {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Admin access required.');
       return;
     }
@@ -1076,44 +1112,75 @@ export class BotUpdate {
     const name = this.categoryEditState.getPendingNewName(userId);
     if (!name) {
       this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Add session expired. Open Categories again.');
       return;
     }
 
-    const normalized = text.trim().toLowerCase();
-    if (normalized === 'cancel') {
+    const parsed = this.parseCategoryAmount(text, true);
+    if (parsed.kind === 'cancel') {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Add category cancelled.');
       return;
     }
-
-    const isSkip = normalized === 'skip' || normalized === 'none' || normalized === '-';
-    let cost: number | null;
-    if (isSkip) {
-      cost = null;
-    } else {
-      const parsed = parseFloat(text.replace(/,/g, ''));
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1_000_000) {
-        await ctx.reply(
-          'Invalid value. Enter a number between 0 and 1,000,000, ' +
-            'or send "skip" to leave it unset, or "cancel" to abort.',
-        );
-        return;
-      }
-      cost = parsed;
+    if (parsed.kind === 'error') {
+      await ctx.reply(parsed.message);
+      return;
     }
 
-    const result = await this.categories.create(name, cost);
+    this.categoryEditState.setPendingNewFee(userId, parsed.value);
+    this.adminAuth.setPending(userId, 'add-category-commission');
+    await ctx.reply(
+      `Now enter the commission (ETB) for <b>${this.escapeHtml(name)}</b>.\n` +
+        'Send <code>skip</code> to leave it unset, or <code>cancel</code> to abort.',
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  private async handleAddCategoryCommission(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const name = this.categoryEditState.getPendingNewName(userId);
+    const fee = this.categoryEditState.getPendingNewFee(userId);
+    if (!name || fee === undefined) {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
+      await ctx.reply('Add session expired. Open Categories again.');
+      return;
+    }
+
+    const parsed = this.parseCategoryAmount(text, true);
+    if (parsed.kind === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
+      await ctx.reply('Add category cancelled.');
+      return;
+    }
+    if (parsed.kind === 'error') {
+      await ctx.reply(parsed.message);
+      return;
+    }
+
+    const result = await this.categories.create(name, fee, parsed.value);
     if (result.error === 'invalid') {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply('Stored name became invalid. Start again from the Categories list.');
       return;
     }
     if (result.error === 'duplicate') {
       this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPendingNewName(userId);
+      this.categoryEditState.clearPendingNewCategory(userId);
       await ctx.reply(
         `<b>${this.escapeHtml(name)}</b> was created elsewhere in the meantime. Try again.`,
         { parse_mode: 'HTML' },
@@ -1122,18 +1189,15 @@ export class BotUpdate {
     }
 
     this.adminAuth.clearPending(userId);
-    this.categoryEditState.clearPendingNewName(userId);
+    this.categoryEditState.clearPendingNewCategory(userId);
 
     const created = result.category!;
-    const formatted =
-      created.shippingCost == null
-        ? 'unset'
-        : `${created.shippingCost.toLocaleString('en-US')} ETB`;
     this.logger.log(
-      `Category created: ${created.name} (#${created.id}) shipping_cost=${formatted} by admin ${userId}`,
+      `Category created: ${created.name} (#${created.id}) by admin ${userId}`,
     );
     await ctx.reply(
-      `✅ Category <b>${this.escapeHtml(created.name)}</b> created with shipping cost ${formatted}.`,
+      `✅ Category <b>${this.escapeHtml(created.name)}</b> created.\n` +
+        `Delivery total: <b>${this.formatCategoryEtb(this.categoryDeliveryTotal(created))}</b>`,
       { parse_mode: 'HTML' },
     );
 
@@ -1276,32 +1340,20 @@ export class BotUpdate {
       return null;
     }
 
-    // The margin tier is a property of the SKU, not the basket size, so it
-    // is resolved from the per-unit cost ETB (USD × rate, pre-margin,
-    // pre-quantity).
-    const unitCostEtb = userUnitUsd * rate;
-    const margin = resolveDynamicMarginPercent(unitCostEtb);
+    // Pricing math (must match CalculatorService.calculateOrderTotalEtb):
+    //   1) baseEtb     = USD × rate
+    //   2) subtotal    = baseEtb + delivery        (delivery folded in first)
+    //   3) margin tier picked from subtotal
+    //   4) itemEtb     = subtotal × (1 + margin/100)  (margin applies to delivery too)
+    //   5) total       = ceil(itemEtb × qty)          (always round up)
+    const baseEtbPerUnit = userUnitUsd * rate;
+    const subtotalPerUnit = baseEtbPerUnit + draft.deliveryEtb;
+    const margin = resolveDynamicMarginPercent(subtotalPerUnit);
+    const itemEtbPerUnit = subtotalPerUnit * (1 + margin / 100);
+    const total = Math.ceil(itemEtbPerUnit * draft.quantity);
 
-    // Walk the formula exactly in the order the business owner defined it.
-    // Keep every intermediate value as floating-point ETB so cents accumulate
-    // exactly; only round ONCE, after the final multiplication by quantity.
-    //
-    //   1. apply margin in USD     → sellingUsdPerUnit
-    //   2. convert to ETB          → sellingEtbPerUnit
-    //   3. add per-item delivery   → itemEtbPerUnit
-    //   4. × quantity              → exact final total (still floating-point)
-    //   5. round ONCE              → integer ETB final total
-    const sellingUsdPerUnit = userUnitUsd * (1 + margin / 100);
-    const sellingEtbPerUnit = sellingUsdPerUnit * rate;
-    const itemEtbPerUnit = sellingEtbPerUnit + draft.deliveryEtb;
-    const total = Math.round(itemEtbPerUnit * draft.quantity);
-
-    // Derived figures stored for admin reports / DB. The user-facing display
-    // only shows `total` so these never appear on the reseller's screen.
-    //   • unitEtb    : per-unit selling price (delivery excluded), rounded.
-    //   • sellingEtb : selling subtotal (selling × qty, delivery excluded).
-    const sellingPerUnit = Math.round(sellingEtbPerUnit);
-    const sellingTotal = total - draft.deliveryEtb * draft.quantity;
+    const sellingPerUnit = Math.ceil(itemEtbPerUnit);
+    const sellingTotal = total;
 
     return this.orderDraft.setUserPrice(userId, {
       userUnitUsd,
@@ -1322,10 +1374,11 @@ export class BotUpdate {
     return Number.isFinite(num) ? num : null;
   }
 
-  private async handleEditCategoryCost(
+  private async handleEditCategoryAmount(
     ctx: Context,
     userId: number,
     text: string,
+    field: 'fee' | 'commission',
   ): Promise<void> {
     if (!(await this.admins.isAdmin(userId))) {
       this.adminAuth.clearPending(userId);
@@ -1341,24 +1394,22 @@ export class BotUpdate {
       return;
     }
 
-    const normalized = text.trim().toLowerCase();
-    const isClear = normalized === 'clear' || normalized === 'null' || normalized === '-';
-
-    let cost: number | null;
-    if (isClear) {
-      cost = null;
-    } else {
-      const parsed = parseFloat(text.replace(/,/g, ''));
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1_000_000) {
-        await ctx.reply(
-          'Invalid value. Enter a number between 0 and 1,000,000, or send "clear" to remove the cost.',
-        );
-        return;
-      }
-      cost = parsed;
+    const parsed = this.parseCategoryAmount(text, false);
+    if (parsed.kind === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPending(userId);
+      await this.showCategoryDetail(ctx, categoryId, 'reply');
+      return;
+    }
+    if (parsed.kind === 'error') {
+      await ctx.reply(parsed.message);
+      return;
     }
 
-    const updated = await this.categories.setShippingCost(categoryId, cost);
+    const updated =
+      field === 'fee'
+        ? await this.categories.setShippingCost(categoryId, parsed.value)
+        : await this.categories.setCommissionEtb(categoryId, parsed.value);
     this.adminAuth.clearPending(userId);
     this.categoryEditState.clearPending(userId);
 
@@ -1367,23 +1418,22 @@ export class BotUpdate {
       return;
     }
 
+    const label = field === 'fee' ? 'shipping fee' : 'commission';
     const formatted =
-      updated.shippingCost == null
+      (field === 'fee' ? updated.shippingCost : updated.commissionEtb) == null
         ? 'cleared'
-        : `${updated.shippingCost.toLocaleString('en-US')} ETB`;
+        : this.formatCategoryEtb(
+            field === 'fee' ? updated.shippingCost : updated.commissionEtb,
+          );
     this.logger.log(
-      `Category #${categoryId} (${updated.name}) shippingcost ${formatted} by admin ${userId}`,
+      `Category #${categoryId} (${updated.name}) ${label} ${formatted} by admin ${userId}`,
     );
     await ctx.reply(
-      `✅ <b>${this.escapeHtml(updated.name)}</b> shipping cost ${formatted}.`,
+      `✅ <b>${this.escapeHtml(updated.name)}</b> ${label} ${formatted}.`,
       { parse_mode: 'HTML' },
     );
 
-    const list = await this.categories.findAll();
-    await ctx.reply(this.buildCategoriesMessage(list), {
-      parse_mode: 'HTML',
-      ...this.categoriesKeyboard(list),
-    });
+    await this.showCategoryDetail(ctx, categoryId, 'reply');
   }
 
   private async handleAdminGrant(
@@ -1703,11 +1753,13 @@ export class BotUpdate {
       '<b>⚙️ Settings</b>',
       '',
       '<b>Pricing</b> (tap a button to edit)',
-      '• Profit margin (dynamic, per unit ETB):',
-      '   – &lt; 5,000 ETB → <b>30%</b>',
-      '   – 5,000–10,000 ETB → <b>20%</b>',
+      '• Profit margin (dynamic; tier picked from per-unit subtotal ETB incl. delivery, then applied to that whole subtotal):',
+      '   – &lt; 3,000 ETB → <b>30%</b>',
+      '   – 3,000–10,000 ETB → <b>20%</b>',
       '   – &gt; 10,000 ETB → <b>15%</b>',
-      `• Delivery fee: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
+      '• Totals are rounded <b>up</b> after multiplying by quantity.',
+      `• Default delivery fallback: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
+      '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       '',
       `<b>Admins</b> (${adminList.length})`,
@@ -1730,7 +1782,7 @@ export class BotUpdate {
     const adminList = await this.admins.findAll();
     const rows: ReturnType<typeof Markup.button.callback>[][] = [
       [
-        Markup.button.callback('✏️ Delivery', 'admin:edit:delivery'),
+        Markup.button.callback('✏️ Fallback delivery', 'admin:edit:delivery'),
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
@@ -1763,14 +1815,11 @@ export class BotUpdate {
     if (list.length === 0) {
       lines.push('<i>No categories yet.</i>');
     } else {
-      lines.push('Tap a category below to set or clear its shipping cost.');
+      lines.push('Fee + commission = delivery per item.');
+      lines.push('Tap a category to view or edit.');
       lines.push('');
       for (const c of list) {
-        const cost =
-          c.shippingCost == null
-            ? '<i>not set</i>'
-            : `<b>${c.shippingCost.toLocaleString('en-US')} ETB</b>`;
-        lines.push(`• ${this.escapeHtml(c.name)} — ${cost}`);
+        lines.push(`• ${this.escapeHtml(c.name)} — ${this.categoryBreakdown(c)}`);
       }
     }
     return lines.join('\n');
@@ -1779,16 +1828,146 @@ export class BotUpdate {
   private categoriesKeyboard(list: Category[]) {
     const rows: ReturnType<typeof Markup.button.callback>[][] = [];
     for (const c of list) {
-      const tag =
-        c.shippingCost == null
-          ? '—'
-          : `${c.shippingCost.toLocaleString('en-US')} ETB`;
+      const total = this.categoryDeliveryTotal(c);
+      const tag = total > 0 ? `${total.toLocaleString('en-US')} ETB` : '—';
       const label = `${c.name} · ${tag}`.slice(0, 60);
       rows.push([Markup.button.callback(label, `admin:cat:${c.id}`)]);
     }
     rows.push([Markup.button.callback('➕ Add category', 'admin:cat:add')]);
     rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
     return Markup.inlineKeyboard(rows);
+  }
+
+  private buildCategoryDetailMessage(category: Category): string {
+    return [
+      `<b>📂 ${this.escapeHtml(category.name)}</b>`,
+      '',
+      `Shipping fee: <b>${this.formatCategoryEtb(category.shippingCost)}</b>`,
+      `Commission: <b>${this.formatCategoryEtb(category.commissionEtb)}</b>`,
+      '--------------------',
+      `Delivery total: <b>${this.formatCategoryEtb(this.categoryDeliveryTotal(category))}</b>`,
+      '',
+      '<i>Delivery total is added per item at checkout.</i>',
+    ].join('\n');
+  }
+
+  private categoryDetailKeyboard(category: Category) {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback(
+          '✏️ Edit shipping fee',
+          `admin:cat:fee:${category.id}`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          '✏️ Edit commission',
+          `admin:cat:comm:${category.id}`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          '🗑 Clear shipping fee',
+          `admin:cat:clear-fee:${category.id}`,
+        ),
+        Markup.button.callback(
+          '🗑 Clear commission',
+          `admin:cat:clear-comm:${category.id}`,
+        ),
+      ],
+      [Markup.button.callback('🗑 Clear both', `admin:cat:clear-both:${category.id}`)],
+      [Markup.button.callback('← Back to list', 'admin:categories')],
+    ]);
+  }
+
+  private async showCategoryDetail(
+    ctx: Context,
+    categoryId: number,
+    mode: 'edit' | 'reply',
+  ): Promise<void> {
+    const category = await this.categories.findById(categoryId);
+    if (!category) {
+      if (mode === 'edit') {
+        await this.safeAnswer(ctx, 'Category not found.', true);
+      } else {
+        await ctx.reply('Category not found.');
+      }
+      return;
+    }
+
+    const body = this.buildCategoryDetailMessage(category);
+    const options = { parse_mode: 'HTML' as const, ...this.categoryDetailKeyboard(category) };
+    if (mode === 'edit') {
+      try {
+        await ctx.editMessageText(body, options);
+      } catch (err) {
+        if (this.isMessageNotModifiedError(err)) return;
+        this.fileLogger.logError('showCategoryDetail', err, { categoryId });
+      }
+      return;
+    }
+    await ctx.reply(body, options);
+  }
+
+  private categoryBreakdown(category: Category): string {
+    const fee = category.shippingCost;
+    const commission = category.commissionEtb;
+    if (fee == null && commission == null) return '<i>not set</i>';
+    const total = this.categoryDeliveryTotal(category);
+    return (
+      `<b>${this.formatCategoryEtb(fee)}</b> + ` +
+      `<b>${this.formatCategoryEtb(commission)}</b> = ` +
+      `<b>${this.formatCategoryEtb(total)}</b>`
+    );
+  }
+
+  private categoryDeliveryTotal(category: Category): number {
+    return (category.shippingCost ?? 0) + (category.commissionEtb ?? 0);
+  }
+
+  private formatCategoryEtb(value: number | null): string {
+    return value == null ? '—' : `${value.toLocaleString('en-US')} ETB`;
+  }
+
+  private parseCategoryAmount(
+    text: string,
+    allowSkip: boolean,
+  ):
+    | { kind: 'ok'; value: number | null }
+    | { kind: 'cancel' }
+    | { kind: 'error'; message: string } {
+    const normalized = text.trim().toLowerCase();
+    if (normalized === 'cancel') return { kind: 'cancel' };
+    if (
+      normalized === 'clear' ||
+      normalized === 'null' ||
+      normalized === '-' ||
+      (allowSkip && (normalized === 'skip' || normalized === 'none'))
+    ) {
+      return { kind: 'ok', value: null };
+    }
+
+    const cleaned = text.replace(/,/g, '').trim();
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) {
+      const skipText = allowSkip ? ', "skip" to leave it unset,' : '';
+      return {
+        kind: 'error',
+        message:
+          `Invalid value. Enter a number between 0 and 1,000,000${skipText} ` +
+          'or "cancel" to abort.',
+      };
+    }
+    const parsed = parseFloat(cleaned);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1_000_000) {
+      const skipText = allowSkip ? ', "skip" to leave it unset,' : '';
+      return {
+        kind: 'error',
+        message:
+          `Invalid value. Enter a number between 0 and 1,000,000${skipText} ` +
+          'or "cancel" to abort.',
+      };
+    }
+    return { kind: 'ok', value: parsed };
   }
 
   private async requireAdmin(ctx: Context): Promise<boolean> {

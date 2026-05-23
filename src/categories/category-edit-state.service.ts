@@ -12,10 +12,16 @@ interface PendingNewCategory {
   since: number;
 }
 
+interface PendingNewCategoryFee {
+  fee: number | null;
+  since: number;
+}
+
 @Injectable()
 export class CategoryEditStateService {
   private readonly state = new Map<number, PendingCategoryEdit>();
   private readonly newNameState = new Map<number, PendingNewCategory>();
+  private readonly newFeeState = new Map<number, PendingNewCategoryFee>();
 
   setPending(userId: number, categoryId: number): void {
     this.state.set(userId, { categoryId, since: Date.now() });
@@ -51,5 +57,28 @@ export class CategoryEditStateService {
 
   clearPendingNewName(userId: number): void {
     this.newNameState.delete(userId);
+  }
+
+  setPendingNewFee(userId: number, fee: number | null): void {
+    this.newFeeState.set(userId, { fee, since: Date.now() });
+  }
+
+  getPendingNewFee(userId: number): number | null | undefined {
+    const entry = this.newFeeState.get(userId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.since > STATE_TTL_MS) {
+      this.newFeeState.delete(userId);
+      return undefined;
+    }
+    return entry.fee;
+  }
+
+  clearPendingNewFee(userId: number): void {
+    this.newFeeState.delete(userId);
+  }
+
+  clearPendingNewCategory(userId: number): void {
+    this.clearPendingNewName(userId);
+    this.clearPendingNewFee(userId);
   }
 }
