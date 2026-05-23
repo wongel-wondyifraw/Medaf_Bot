@@ -8,8 +8,12 @@ export type PendingAction =
   | 'edit-rate'
   | 'add-admin'
   | 'edit-category-cost'
+  | 'edit-category-fee'
+  | 'edit-category-commission'
   | 'add-category'
-  | 'add-category-cost';
+  | 'add-category-cost'
+  | 'add-category-fee'
+  | 'add-category-commission';
 
 interface PendingState {
   action: PendingAction;

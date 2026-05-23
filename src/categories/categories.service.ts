@@ -4,54 +4,123 @@ import { Repository } from 'typeorm';
 import { Category } from './category.entity';
 
 /**
- * Keywords that map to a category in the seeded `categories` table. Used by
- * the bot's manual order flow to pick a shipping cost from the product
- * title alone (when no scraped breadcrumb is available). Order within each
- * list does not matter — the matcher picks the longest match across all
- * categories so more specific tokens beat shorter ones.
+ * Keywords that map SHEIN titles/slugs onto the local delivery catalog.
+ * Order within each list does not matter: the matcher picks the longest
+ * phrase across all categories so specific tokens beat generic ones.
  */
 const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
-  Kids: ['kids', 'tween', 'girls', 'boys', 'toddler', 'children'],
-  'Baby & Maternity': ['baby', 'infant', 'maternity', 'newborn', 'nursing'],
-  Beachwear: ['bikini', 'swimsuit', 'swimwear', 'beachwear'],
-  'Underwear & Sleepwear': [
-    'bra', 'panties', 'lingerie', 'underwear', 'pajama', 'pyjama',
-    'sleepwear', 'robe', 'nightgown',
-  ],
-  Curve: ['plus size', 'curve'],
-  'Women Clothing': [
-    'dress', 'blouse', 'cardigan', 'jumpsuit', 'romper', 'bodysuit', 'skirt',
+  'T-shirt': ['t-shirt', 'tshirt', 'tee', 'tees'],
+  Shirt: ['shirt', 'blouse', 'button up', 'button-up', 'button down'],
+  Dress: [
+    'dress',
+    'maxi dress',
+    'long dress',
     'gown',
+    'kaftan dress',
+    'abaya',
+    'evening dress',
+    'formal dress',
   ],
-  'Men Clothing': ["men's", 'mens', 'menswear'],
-  Shoes: ['shoes', 'sneakers', 'sandals', 'boots', 'heels', 'flats', 'loafers'],
-  'Bags & Luggage': [
-    'handbag', 'backpack', 'wallet', 'tote', 'clutch', 'luggage', 'suitcase',
-    'bag',
+  'Short Dress': [
+    'mini dress',
+    'midi dress',
+    'short dress',
+    'bodycon dress',
+    'bodycon',
+    'shirt dress',
+    'sundress',
+    't-shirt dress',
   ],
-  'Jewelry & Accessories': [
-    'necklace', 'earring', 'bracelet', 'ring', 'watch', 'pendant', 'choker',
+  Jeans: ['jeans', 'jean', 'denim pants'],
+  Trousers: ['pants', 'trousers', 'leggings', 'joggers', 'slacks', 'chinos'],
+  'Girls closed Shoes': ['sneakers', 'boots', 'ankle boot', 'shoes'],
+  'Girls flat Shoes': [
+    'flat',
+    'flats',
+    'loafer',
+    'loafers',
+    'ballet flat',
+    'ballet flats',
+    'sandals',
+    'sandal',
+    'slides',
+    'flip flop',
+    'flip flops',
+    'mules',
+  ],
+  'Girls Hill Shoes': [
+    'heel',
+    'heels',
+    'pump',
+    'pumps',
+    'stiletto',
+    'wedge',
+    'wedges',
+    'heeled sandal',
+    'heeled sandals',
+  ],
+  'Men shoes': [
+    'men shoes',
+    'mens shoes',
+    "men's shoes",
+    'men sneakers',
+    'mens sneakers',
+    'men boots',
+    'mens boots',
+    'men loafers',
+    'men sandals',
+    'mens sandals',
+  ],
+  'Body top': ['bodysuit', 'body suit', 'leotard'],
+  'Jacket big': ['coat', 'puffer', 'parka', 'trench', 'overcoat', 'winter jacket'],
+  'Jacket small': ['jacket', 'blazer', 'bomber', 'cardigan'],
+  'Phone Cover': ['phone case', 'phone cover', 'iphone case', 'samsung case', 'phone holder'],
+  'Bag(big)': ['backpack', 'tote', 'duffel', 'suitcase', 'luggage', 'travel bag'],
+  'Bag(small)': ['clutch', 'crossbody', 'handbag', 'wallet', 'purse', 'shoulder bag', 'bag'],
+  watch: ['watch', 'wristwatch', 'smartwatch'],
+  '2pc Cloth': ['2pc', '2 piece', 'two piece', '2-piece', 'co-ord', 'matching set'],
+  'Eye glass': ['sunglasses', 'eyeglasses', 'glasses', 'eyewear', 'shades'],
+  Jewelery: [
+    'necklace',
+    'earring',
+    'earrings',
+    'bracelet',
+    'ring',
+    'pendant',
+    'choker',
     'anklet',
+    'jewelry',
+    'jewellery',
   ],
-  'Beauty & Health': [
-    'lipstick', 'makeup', 'mascara', 'perfume', 'skincare', 'cosmetic',
+  Underwear: ['underwear', 'bra', 'panties', 'lingerie', 'thong', 'brief', 'boxer'],
+  Cosmetics: [
+    'cosmetic',
+    'cosmetics',
+    'makeup',
+    'make up',
+    'make-up',
+    'lipstick',
+    'lip gloss',
+    'lip balm',
+    'mascara',
+    'eyeliner',
+    'eye shadow',
+    'eyeshadow',
+    'foundation',
+    'concealer',
+    'blush',
+    'highlighter',
+    'powder',
+    'nail polish',
+    'perfume',
+    'fragrance',
+    'skincare',
+    'serum',
+    'moisturizer',
     'shampoo',
+    'conditioner',
+    'beauty',
   ],
-  'Home & Living': ['cushion', 'curtain', 'rug', 'lamp', 'pillow', 'vase', 'decor'],
-  'Sports & Outdoors': [
-    'yoga', 'gym', 'fitness', 'sport', 'workout', 'athletic', 'running',
-  ],
-  'Home Textiles': ['towel', 'bedsheet', 'duvet', 'bedding', 'tablecloth'],
-  'Cell Phones & Accessories': [
-    'phone case', 'charger', 'cable', 'earphone', 'earbud', 'screen protector',
-  ],
-  Electronics: ['headphone', 'speaker', 'led light', 'projector'],
-  'Toys & Games': ['toy', 'doll', 'puzzle', 'lego', 'plush'],
-  'Tools & Home Improvement': ['drill', 'hammer', 'wrench', 'screwdriver'],
-  'Office & School Supplies': ['notebook', 'stationery', 'planner', 'pencil case'],
-  'Pet Supplies': ['leash', 'collar', 'pet bowl', 'pet bed'],
-  'Books & Magazine': ['book', 'magazine'],
-  'Food & Beverages': ['candy', 'snack', 'beverage'],
 };
 
 @Injectable()
@@ -78,14 +147,16 @@ export class CategoriesService {
   async create(
     name: string,
     shippingCost: number | null = null,
+    commissionEtb: number | null = null,
   ): Promise<{ category?: Category; error?: 'duplicate' | 'invalid' }> {
     const trimmed = name.trim();
     if (trimmed.length < 1 || trimmed.length > 80) return { error: 'invalid' };
     const existing = await this.findByName(trimmed);
     if (existing) return { error: 'duplicate' };
-    const saved = await this.repo.save({ name: trimmed, shippingCost });
+    const saved = await this.repo.save({ name: trimmed, shippingCost, commissionEtb });
     this.logger.log(
-      `Category created: ${saved.name} (#${saved.id}) shipping_cost=${shippingCost ?? 'null'}`,
+      `Category created: ${saved.name} (#${saved.id}) ` +
+        `shipping_cost=${shippingCost ?? 'null'} commission_etb=${commissionEtb ?? 'null'}`,
     );
     return { category: saved };
   }
@@ -96,6 +167,27 @@ export class CategoriesService {
     existing.shippingCost = cost;
     await this.repo.save(existing);
     this.logger.log(`Category #${id} (${existing.name}) shipping_cost set to ${cost}`);
+    return existing;
+  }
+
+  async setCommissionEtb(id: number, commission: number | null): Promise<Category | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    existing.commissionEtb = commission;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category #${id} (${existing.name}) commission_etb set to ${commission}`,
+    );
+    return existing;
+  }
+
+  async clearCosts(id: number): Promise<Category | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    existing.shippingCost = null;
+    existing.commissionEtb = null;
+    await this.repo.save(existing);
+    this.logger.log(`Category #${id} (${existing.name}) costs cleared`);
     return existing;
   }
 
