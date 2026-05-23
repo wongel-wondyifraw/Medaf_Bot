@@ -183,9 +183,14 @@ export class BotUpdate {
       return;
     }
 
-    // If the user is on the price step of an order draft, treat their text as
-    // the USD unit price they actually want to use (or "cancel").
+    // Order-draft text routing. Each step that expects free-form text from
+    // the user (custom quantity, unit USD price) is dispatched here before
+    // any of the registration / SHEIN-link checks below.
     const activeDraft = this.orderDraft.getDraft(from.id);
+    if (activeDraft && activeDraft.step === 'qty-input') {
+      await this.handleOrderQuantityInput(ctx, from.id, text);
+      return;
+    }
     if (activeDraft && activeDraft.step === 'price') {
       await this.handleOrderPriceInput(ctx, from.id, activeDraft, text);
       return;
@@ -399,6 +404,47 @@ export class BotUpdate {
     await this.editDraftMessage(ctx, updated);
   }
 
+  @Action('ord:qty:more')
+  async onOrderQuantityMore(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
+    if (draft.step !== 'qty') {
+      await this.safeAnswer(ctx, 'Not on the quantity step.', true);
+      return;
+    }
+    const updated = this.orderDraft.enterQuantityInputMode(from.id);
+    if (!updated) {
+      await this.safeAnswer(ctx, 'Could not open custom quantity input.', true);
+      return;
+    }
+    await this.safeAnswer(ctx, '', false);
+    await this.editDraftMessage(ctx, updated);
+  }
+
+  @Action('ord:qty:back')
+  async onOrderQuantityBack(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    const draft = this.orderDraft.getDraft(from.id);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      return;
+    }
+    if (draft.step !== 'qty-input') {
+      await this.safeAnswer(ctx, 'Not on the custom quantity step.', true);
+      return;
+    }
+    const updated = this.orderDraft.exitQuantityInputMode(from.id);
+    if (!updated) return;
+    await this.safeAnswer(ctx, '', false);
+    await this.editDraftMessage(ctx, updated);
+  }
+
   @Action('ord:price:keep')
   async onOrderPriceKeep(@Ctx() ctx: Context) {
     const from = ctx.from;
@@ -420,8 +466,15 @@ export class BotUpdate {
       );
       return;
     }
-    const updated = this.applyUserPrice(from.id, draft, draft.scrapedUnitUsd);
-    if (!updated) return;
+    const updated = await this.applyUserPrice(from.id, draft, draft.scrapedUnitUsd);
+    if (!updated) {
+      await this.safeAnswer(
+        ctx,
+        'Pricing is not configured (USD→ETB missing). Please contact an admin.',
+        true,
+      );
+      return;
+    }
     await this.safeAnswer(ctx, 'Using scraped price.', false);
     await this.editDraftMessage(ctx, updated);
   }
@@ -1063,6 +1116,63 @@ export class BotUpdate {
     });
   }
 
+  /**
+   * Parses a custom-quantity reply typed by the user after they tapped
+   * "➕ More" on the quantity keyboard. On success the draft advances to the
+   * price step using the existing `selectQuantity` transition, so the rest
+   * of the flow behaves identically to a tapped 1-5 button.
+   */
+  private async handleOrderQuantityInput(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === 'cancel') {
+      this.orderDraft.clearDraft(userId);
+      await ctx.reply('Order cancelled.');
+      return;
+    }
+    if (trimmed.toLowerCase() === 'back') {
+      const reverted = this.orderDraft.exitQuantityInputMode(userId);
+      if (!reverted) {
+        await ctx.reply('Order session expired. Send the link again.');
+        return;
+      }
+      await ctx.reply(this.buildDraftMessage(reverted), {
+        parse_mode: 'HTML',
+        ...this.buildDraftKeyboard(reverted),
+      });
+      return;
+    }
+    // Accept "3", " 3 ", "3 pcs", etc. Reject decimals/negatives by requiring
+    // the entire trimmed input to parse as a positive integer once stripped
+    // of non-digits at the edges.
+    const cleaned = trimmed.replace(/[^\d]/g, '');
+    if (!cleaned || cleaned !== trimmed.match(/\d+/)?.[0]) {
+      await ctx.reply(
+        'That does not look like a whole number. Send a quantity like ' +
+          '<code>7</code> (between 1 and 100), or tap "← Back" / "✗ Cancel".',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+    const qty = parseInt(cleaned, 10);
+    if (!Number.isFinite(qty) || qty < 1 || qty > 100) {
+      await ctx.reply('Quantity must be a whole number between 1 and 100.');
+      return;
+    }
+    const updated = this.orderDraft.selectQuantity(userId, qty);
+    if (!updated) {
+      await ctx.reply('Order session expired. Send the link again.');
+      return;
+    }
+    await ctx.reply(this.buildDraftMessage(updated), {
+      parse_mode: 'HTML',
+      ...this.buildDraftKeyboard(updated),
+    });
+  }
+
   private async handleOrderPriceInput(
     ctx: Context,
     userId: number,
@@ -1090,9 +1200,16 @@ export class BotUpdate {
       return;
     }
 
-    const updated = this.applyUserPrice(userId, draft, parsed);
+    const updated = await this.applyUserPrice(userId, draft, parsed);
     if (!updated) {
-      await ctx.reply('Order session expired. Send the link again.');
+      // Two failure modes converge here: the draft may have expired (rare —
+      // we just fetched it 0 ms ago) or the `usd_to_etb` settings row is
+      // missing/invalid. The latter is the more common operational issue, so
+      // the message names it explicitly.
+      await ctx.reply(
+        'Could not price this order — USD→ETB rate is not configured. ' +
+          'An admin needs to set it under Settings → USD→ETB.',
+      );
       return;
     }
 
@@ -1107,27 +1224,64 @@ export class BotUpdate {
    * transitions it to the confirm step. Uses the same math as
    * CalculatorService so the user sees consistent totals.
    */
-  private applyUserPrice(
+  private async applyUserPrice(
     userId: number,
     draft: OrderDraft,
     userUnitUsd: number,
-  ): OrderDraft | null {
-    // Recompute the margin from the user-supplied USD price so the tier (30/
-    // 20/15%) reflects the actual unit cost in ETB rather than the placeholder
-    // value snapshotted at draft creation time (when USD was 0).
-    const unitCostEtb = userUnitUsd * draft.rateUsed;
+  ): Promise<OrderDraft | null> {
+    // Authoritative USD→ETB rate comes from the `settings` table row whose
+    // key is `usd_to_etb` (SETTING_KEYS.USD_TO_ETB). Reading it live here
+    // — rather than reusing the draft's snapshot from creation time — means
+    // an admin who edits the rate in the middle of a reseller's draft sees
+    // their change applied to the very next price entry. The draft snapshot
+    // is only used as a safety fallback in the unlikely case the row was
+    // wiped between draft creation (when CalculatorService validated it)
+    // and now.
+    const dbRate = await this.settings.getNumber(SETTING_KEYS.USD_TO_ETB, 0);
+    const rate = dbRate > 0 ? dbRate : draft.rateUsed;
+    if (!rate || rate <= 0) {
+      this.fileLogger.logError(
+        'applyUserPrice',
+        new Error('USD_TO_ETB is not configured in settings'),
+        { userId },
+      );
+      return null;
+    }
+
+    // The margin tier is a property of the SKU, not the basket size, so it
+    // is resolved from the per-unit cost ETB (USD × rate, pre-margin,
+    // pre-quantity).
+    const unitCostEtb = userUnitUsd * rate;
     const margin = resolveDynamicMarginPercent(unitCostEtb);
-    const sellingPerUnit = Math.round(
-      userUnitUsd * (1 + margin / 100) * draft.rateUsed,
-    );
-    const sellingTotal = sellingPerUnit * draft.quantity;
-    const total = sellingTotal + draft.deliveryEtb;
+
+    // Walk the formula exactly in the order the business owner defined it.
+    // Keep every intermediate value as floating-point ETB so cents accumulate
+    // exactly; only round ONCE, after the final multiplication by quantity.
+    //
+    //   1. apply margin in USD     → sellingUsdPerUnit
+    //   2. convert to ETB          → sellingEtbPerUnit
+    //   3. add per-item delivery   → itemEtbPerUnit
+    //   4. × quantity              → exact final total (still floating-point)
+    //   5. round ONCE              → integer ETB final total
+    const sellingUsdPerUnit = userUnitUsd * (1 + margin / 100);
+    const sellingEtbPerUnit = sellingUsdPerUnit * rate;
+    const itemEtbPerUnit = sellingEtbPerUnit + draft.deliveryEtb;
+    const total = Math.round(itemEtbPerUnit * draft.quantity);
+
+    // Derived figures stored for admin reports / DB. The user-facing display
+    // only shows `total` so these never appear on the reseller's screen.
+    //   • unitEtb    : per-unit selling price (delivery excluded), rounded.
+    //   • sellingEtb : selling subtotal (selling × qty, delivery excluded).
+    const sellingPerUnit = Math.round(sellingEtbPerUnit);
+    const sellingTotal = total - draft.deliveryEtb * draft.quantity;
+
     return this.orderDraft.setUserPrice(userId, {
       userUnitUsd,
       unitEtb: sellingPerUnit,
       sellingEtb: sellingTotal,
       totalEtb: total,
       marginPercent: margin,
+      rateUsed: rate,
     });
   }
 
@@ -1625,6 +1779,8 @@ export class BotUpdate {
     }
     if (draft.step === 'qty' || draft.step === 'price' || draft.step === 'confirm') {
       lines.push(`Quantity: <b>${draft.quantity}</b>`);
+    } else if (draft.step === 'qty-input') {
+      lines.push('Quantity: <i>pending</i>');
     }
 
     if (draft.step === 'confirm') {
@@ -1644,7 +1800,9 @@ export class BotUpdate {
       case 'color':
         return 'Choose a color to continue.';
       case 'qty':
-        return 'Choose a quantity to continue.';
+        return 'Choose a quantity, or tap "➕ More" to enter your own.';
+      case 'qty-input':
+        return 'Reply with a quantity (1–100), or tap "← Back" / "✗ Cancel".';
       case 'price':
         if (draft.scrapedUnitUsd != null) {
           return (
@@ -1682,9 +1840,16 @@ export class BotUpdate {
       ]);
     }
     if (draft.step === 'qty') {
-      const choices = [1, 2, 3, 5, 10];
+      const choices = [1, 2, 3, 4, 5];
       return Markup.inlineKeyboard([
         choices.map((n) => Markup.button.callback(String(n), `ord:qty:${n}`)),
+        [Markup.button.callback('➕ More', 'ord:qty:more')],
+        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+      ]);
+    }
+    if (draft.step === 'qty-input') {
+      return Markup.inlineKeyboard([
+        [Markup.button.callback('← Back', 'ord:qty:back')],
         [Markup.button.callback('✗ Cancel', 'ord:cancel')],
       ]);
     }

@@ -2,7 +2,13 @@ import { Injectable } from '@nestjs/common';
 
 const STATE_TTL_MS = 30 * 60 * 1000;
 
-export type DraftStep = 'size' | 'color' | 'qty' | 'price' | 'confirm';
+export type DraftStep =
+  | 'size'
+  | 'color'
+  | 'qty'
+  | 'qty-input'
+  | 'price'
+  | 'confirm';
 
 export interface OrderDraft {
   productId: string | null;
@@ -62,6 +68,13 @@ export interface UpdatePriceInput {
    * matching the user-facing math.
    */
   marginPercent: number;
+  /**
+   * The USD→ETB rate actually used at price-entry time. We refresh this from
+   * the `settings.usd_to_etb` row, so the snapshot may legitimately differ
+   * from the value captured at draft creation if the admin edited it in
+   * between.
+   */
+  rateUsed: number;
 }
 
 @Injectable()
@@ -139,6 +152,35 @@ export class OrderDraftStateService {
     return draft;
   }
 
+  /**
+   * Transitions the draft into the "custom quantity" sub-step where the
+   * keyboard is removed and the user is expected to type a number. Only valid
+   * from the regular `qty` step so a tap on "➕ More" can't reopen the
+   * keyboardless step from later in the flow.
+   */
+  enterQuantityInputMode(userId: number): OrderDraft | null {
+    const draft = this.getDraft(userId);
+    if (!draft) return null;
+    if (draft.step !== 'qty') return null;
+    draft.step = 'qty-input';
+    draft.since = Date.now();
+    return draft;
+  }
+
+  /**
+   * Inverse of `enterQuantityInputMode` — returns the draft from the custom
+   * quantity input back to the regular quantity keyboard. No-op when the
+   * draft isn't currently in `qty-input`.
+   */
+  exitQuantityInputMode(userId: number): OrderDraft | null {
+    const draft = this.getDraft(userId);
+    if (!draft) return null;
+    if (draft.step !== 'qty-input') return null;
+    draft.step = 'qty';
+    draft.since = Date.now();
+    return draft;
+  }
+
   setUserPrice(userId: number, input: UpdatePriceInput): OrderDraft | null {
     const draft = this.getDraft(userId);
     if (!draft) return null;
@@ -147,6 +189,7 @@ export class OrderDraftStateService {
     draft.sellingEtb = input.sellingEtb;
     draft.totalEtb = input.totalEtb;
     draft.marginPercent = input.marginPercent;
+    draft.rateUsed = input.rateUsed;
     draft.step = 'confirm';
     draft.since = Date.now();
     return draft;
