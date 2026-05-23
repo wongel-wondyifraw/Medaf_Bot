@@ -8,17 +8,17 @@ import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 export const DEFAULT_DELIVERY_ETB = 500;
 
 /**
- * Dynamic profit margin tiers, applied based on the unit cost price in ETB
- * (i.e. unit USD × USD→ETB rate, BEFORE margin is added).
+ * Dynamic profit margin tiers, applied based on the per-unit subtotal in ETB
+ * (unit USD × USD→ETB rate + category delivery, BEFORE margin is added).
  *
- *   • cost  < 5,000 ETB        → 30%
- *   • 5,000 ≤ cost ≤ 10,000    → 20%
- *   • cost > 10,000 ETB        → 15%
+ *   • subtotal  < 3,000 ETB         → 30%
+ *   • 3,000 ≤ subtotal ≤ 10,000    → 20%
+ *   • subtotal > 10,000 ETB         → 15%
  */
-export function resolveDynamicMarginPercent(unitCostEtb: number): number {
-  if (!Number.isFinite(unitCostEtb) || unitCostEtb <= 0) return 30;
-  if (unitCostEtb < 5000) return 30;
-  if (unitCostEtb <= 10000) return 20;
+export function resolveDynamicMarginPercent(unitSubtotalEtb: number): number {
+  if (!Number.isFinite(unitSubtotalEtb) || unitSubtotalEtb <= 0) return 30;
+  if (unitSubtotalEtb < 3000) return 30;
+  if (unitSubtotalEtb <= 10000) return 20;
   return 15;
 }
 
@@ -162,15 +162,14 @@ export class CalculatorService {
       );
     }
 
-    // Tiered margin is driven by the per-unit cost in ETB (pre-margin).
-    // foreignPrice may be in USD/EUR/GBP, so we use the resolved rate to
-    // approximate the cost ETB regardless of source currency.
+    // Tier is selected from the per-unit subtotal (cost ETB + delivery), but
+    // the margin is applied ONLY to the product cost; delivery is then added
+    // back at face value so the customer is not marked up on shipping.
     const unitCostEtb = foreignPrice * rate;
-    const margin = resolveDynamicMarginPercent(unitCostEtb);
-
-    const sellingForeign = foreignPrice * (1 + margin / 100);
-    const sellingEtb = sellingForeign * rate;
-    const totalEtb = sellingEtb + delivery;
+    const unitSubtotalEtb = unitCostEtb + delivery;
+    const margin = resolveDynamicMarginPercent(unitSubtotalEtb);
+    const sellingEtb = unitCostEtb * (1 + margin / 100) + delivery;
+    const totalEtb = sellingEtb;
 
     return {
       totalEtb: Math.round(totalEtb),

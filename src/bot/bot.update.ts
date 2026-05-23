@@ -1276,32 +1276,18 @@ export class BotUpdate {
       return null;
     }
 
-    // The margin tier is a property of the SKU, not the basket size, so it
-    // is resolved from the per-unit cost ETB (USD × rate, pre-margin,
-    // pre-quantity).
-    const unitCostEtb = userUnitUsd * rate;
-    const margin = resolveDynamicMarginPercent(unitCostEtb);
-
-    // Walk the formula exactly in the order the business owner defined it.
-    // Keep every intermediate value as floating-point ETB so cents accumulate
-    // exactly; only round ONCE, after the final multiplication by quantity.
-    //
-    //   1. apply margin in USD     → sellingUsdPerUnit
-    //   2. convert to ETB          → sellingEtbPerUnit
-    //   3. add per-item delivery   → itemEtbPerUnit
-    //   4. × quantity              → exact final total (still floating-point)
-    //   5. round ONCE              → integer ETB final total
-    const sellingUsdPerUnit = userUnitUsd * (1 + margin / 100);
-    const sellingEtbPerUnit = sellingUsdPerUnit * rate;
-    const itemEtbPerUnit = sellingEtbPerUnit + draft.deliveryEtb;
+    // Tier is read from the per-unit subtotal (cost ETB + delivery) so big
+    // items get the right bracket, but the margin is applied ONLY to the
+    // product cost — delivery is then added back at face value so the
+    // customer is never marked up on shipping. Round once after × qty.
+    const baseEtbPerUnit = userUnitUsd * rate;
+    const subtotalPerUnit = baseEtbPerUnit + draft.deliveryEtb;
+    const margin = resolveDynamicMarginPercent(subtotalPerUnit);
+    const itemEtbPerUnit = baseEtbPerUnit * (1 + margin / 100) + draft.deliveryEtb;
     const total = Math.round(itemEtbPerUnit * draft.quantity);
 
-    // Derived figures stored for admin reports / DB. The user-facing display
-    // only shows `total` so these never appear on the reseller's screen.
-    //   • unitEtb    : per-unit selling price (delivery excluded), rounded.
-    //   • sellingEtb : selling subtotal (selling × qty, delivery excluded).
-    const sellingPerUnit = Math.round(sellingEtbPerUnit);
-    const sellingTotal = total - draft.deliveryEtb * draft.quantity;
+    const sellingPerUnit = Math.round(itemEtbPerUnit);
+    const sellingTotal = total;
 
     return this.orderDraft.setUserPrice(userId, {
       userUnitUsd,
@@ -1703,9 +1689,9 @@ export class BotUpdate {
       '<b>⚙️ Settings</b>',
       '',
       '<b>Pricing</b> (tap a button to edit)',
-      '• Profit margin (dynamic, per unit ETB):',
-      '   – &lt; 5,000 ETB → <b>30%</b>',
-      '   – 5,000–10,000 ETB → <b>20%</b>',
+      '• Profit margin (dynamic; tier from per-unit subtotal ETB incl. delivery, applied to product only):',
+      '   – &lt; 3,000 ETB → <b>30%</b>',
+      '   – 3,000–10,000 ETB → <b>20%</b>',
       '   – &gt; 10,000 ETB → <b>15%</b>',
       `• Delivery fee: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
