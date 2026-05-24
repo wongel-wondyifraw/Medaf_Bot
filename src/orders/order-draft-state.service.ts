@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { PriceConfidence } from '../observations/observations.service';
 
 const STATE_TTL_MS = 30 * 60 * 1000;
 
@@ -37,6 +38,16 @@ export interface OrderDraft {
   rateUsed: number;
   /** Resolved category name (or null when no category matched). */
   categoryName: string | null;
+  /** Reverse-engineered Dubai unit cost in USD. */
+  dubaiUsd: number | null;
+  /** Reverse-engineered Dubai unit cost in AED. */
+  dubaiAed: number | null;
+  /** Factor applied to ethUsd to derive dubaiUsd. */
+  factorUsed: number | null;
+  /** Confidence of the Dubai cost estimate. */
+  confidence: PriceConfidence | null;
+  /** Criteria / history triggers that influenced the estimate. */
+  triggers: string[];
   step: DraftStep;
   since: number;
 }
@@ -75,6 +86,11 @@ export interface UpdatePriceInput {
    * between.
    */
   rateUsed: number;
+  dubaiUsd: number;
+  dubaiAed: number;
+  factorUsed: number;
+  confidence: PriceConfidence;
+  triggers: string[];
 }
 
 @Injectable()
@@ -102,6 +118,11 @@ export class OrderDraftStateService {
       marginPercent: input.marginPercent,
       rateUsed: input.rateUsed,
       categoryName: input.categoryName,
+      dubaiUsd: null,
+      dubaiAed: null,
+      factorUsed: null,
+      confidence: null,
+      triggers: [],
       step,
       since: Date.now(),
     };
@@ -190,6 +211,11 @@ export class OrderDraftStateService {
     draft.totalEtb = input.totalEtb;
     draft.marginPercent = input.marginPercent;
     draft.rateUsed = input.rateUsed;
+    draft.dubaiUsd = input.dubaiUsd;
+    draft.dubaiAed = input.dubaiAed;
+    draft.factorUsed = input.factorUsed;
+    draft.confidence = input.confidence;
+    draft.triggers = input.triggers;
     draft.step = 'confirm';
     draft.since = Date.now();
     return draft;

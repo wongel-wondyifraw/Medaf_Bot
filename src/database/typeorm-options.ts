@@ -5,6 +5,7 @@ import { Admin } from '../admins/admin.entity';
 import { Setting } from '../settings/setting.entity';
 import { HealthLog } from '../health/health-log.entity';
 import { Category } from '../categories/category.entity';
+import { AedObservation } from '../observations/observation.entity';
 import { InitialResellers1737490000000 } from '../migrations/1737490000000-InitialResellers';
 import { Orders1779000000000 } from '../migrations/1779000000000-Orders';
 import { OrderStatus1779100000000 } from '../migrations/1779100000000-OrderStatus';
@@ -17,6 +18,8 @@ import { RenameProductUrlToLink1779700000000 } from '../migrations/1779700000000
 import { OrderUsdPrices1779800000000 } from '../migrations/1779800000000-OrderUsdPrices';
 import { CategoryCommission1780000000000 } from '../migrations/1780000000000-CategoryCommission';
 import { CosmeticsCategory1780100000000 } from '../migrations/1780100000000-CosmeticsCategory';
+import { CategoryDubaiFactor1780200000000 } from '../migrations/1780200000000-CategoryDubaiFactor';
+import { AedObservations1780300000000 } from '../migrations/1780300000000-AedObservations';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -30,7 +33,7 @@ export function buildTypeOrmOptions(opts: {
   return {
     type: 'postgres',
     url: opts.url,
-    entities: [Reseller, Order, Admin, Setting, HealthLog, Category],
+    entities: [Reseller, Order, Admin, Setting, HealthLog, Category, AedObservation],
     migrations: [
       InitialResellers1737490000000,
       Orders1779000000000,
@@ -44,6 +47,8 @@ export function buildTypeOrmOptions(opts: {
       OrderUsdPrices1779800000000,
       CategoryCommission1780000000000,
       CosmeticsCategory1780100000000,
+      CategoryDubaiFactor1780200000000,
+      AedObservations1780300000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

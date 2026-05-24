@@ -3,14 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { Action, Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
 import { Context, Markup } from 'telegraf';
 import { AdminsService } from '../admins/admins.service';
+import { AddPriceStateService } from '../admins/add-price-state.service';
 import {
   AdminAuthStateService,
   PendingAction,
 } from '../admins/admin-auth-state.service';
-import {
-  CalculatorService,
-  resolveDynamicMarginPercent,
-} from '../calculator/calculator.service';
+import { CalculatorService } from '../calculator/calculator.service';
+import { DubaiEstimatorService } from '../calculator/dubai-estimator.service';
+import { resolveBroadGroup } from '../calculator/broad-group';
 import { CategoriesService } from '../categories/categories.service';
 import { CategoryEditStateService } from '../categories/category-edit-state.service';
 import { Category } from '../categories/category.entity';
@@ -33,8 +33,9 @@ import {
   extractSlugTitle,
   isClothingTitle,
 } from '../scraper/manual-order.utils';
+import { ObservationsService } from '../observations/observations.service';
 import { ScraperService } from '../scraper/scraper.service';
-import { ScrapedProduct } from '../scraper/types';
+import { parseShein, ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 
 @Update()
@@ -50,6 +51,9 @@ export class BotUpdate {
     private readonly scraper: ScraperService,
     private readonly linkResolver: LinkResolverService,
     private readonly calculator: CalculatorService,
+    private readonly dubaiEstimator: DubaiEstimatorService,
+    private readonly observations: ObservationsService,
+    private readonly addPriceState: AddPriceStateService,
     private readonly settings: SettingsService,
     private readonly categories: CategoriesService,
     private readonly categoryEditState: CategoryEditStateService,
@@ -687,6 +691,59 @@ export class BotUpdate {
     await ctx.reply('Enter new USD → ETB rate, e.g. 165:');
   }
 
+  @Action('admin:edit:rate-aed')
+  async onEditRateAed(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-rate-aed');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter new USD → AED rate, e.g. 3.67:');
+  }
+
+  @Command('addprice')
+  async onAddPriceCommand(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    if (!(await this.admins.isAdmin(from.id))) {
+      await ctx.reply('Admin access required. Send /admin first.');
+      return;
+    }
+    this.addPriceState.clear(from.id);
+    this.adminAuth.setPending(from.id, 'addprice-link');
+    await ctx.reply(
+      'Send the SHEIN product link (must end with <code>-p-&lt;number&gt;.html</code>).',
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  @Action(/^admin:addprice:cat:(.+)$/)
+  async onAddPricePickCategory(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const categoryName = this.decodeCategoryName(match?.[1] || '');
+    if (!categoryName) {
+      await this.safeAnswer(ctx, 'Invalid category.', true);
+      return;
+    }
+
+    const draft = this.addPriceState.setCategory(from.id, categoryName);
+    if (!draft) {
+      await this.safeAnswer(ctx, 'Session expired. Send /addprice again.', true);
+      return;
+    }
+
+    this.adminAuth.setPending(from.id, 'addprice-eth-usd');
+    await this.safeAnswer(ctx, `Category: ${categoryName}`, false);
+    await ctx.reply(
+      'Send the Ethiopia-view USD price you see on SHEIN (e.g. <code>12.50</code>).',
+      { parse_mode: 'HTML' },
+    );
+  }
+
   @Action('admin:add')
   async onAddAdmin(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -895,15 +952,19 @@ export class BotUpdate {
       return;
     }
 
-    const nameFieldMatch = suffix.match(/^(fee-name|comm-name):(.+)$/);
+    const nameFieldMatch = suffix.match(/^(fee-name|comm-name|factor-name):(.+)$/);
     if (nameFieldMatch) {
-      const field =
-        nameFieldMatch[1] === 'comm-name' ? 'commission' : 'shipping fee';
       const categoryName = this.decodeCategoryName(nameFieldMatch[2]);
       if (!categoryName) {
         await this.safeAnswer(ctx, 'Invalid category.', true);
         return;
       }
+      if (nameFieldMatch[1] === 'factor-name') {
+        await this.handleCategoryEditFactorPromptByName(ctx, from.id, categoryName);
+        return;
+      }
+      const field =
+        nameFieldMatch[1] === 'comm-name' ? 'commission' : 'shipping fee';
       await this.handleCategoryEditFieldPromptByName(
         ctx,
         from.id,
@@ -1182,6 +1243,26 @@ export class BotUpdate {
           label: 'USD → ETB rate',
           suffix: '',
         });
+        break;
+      case 'edit-rate-aed':
+        await this.handleSettingValue(ctx, userId, SETTING_KEYS.USD_TO_AED, text, {
+          min: 0.1,
+          max: 100,
+          label: 'USD → AED rate',
+          suffix: '',
+        });
+        break;
+      case 'edit-category-factor':
+        await this.handleEditCategoryFactor(ctx, userId, text);
+        break;
+      case 'addprice-link':
+        await this.handleAddPriceLink(ctx, userId, text);
+        break;
+      case 'addprice-eth-usd':
+        await this.handleAddPriceEthUsd(ctx, userId, text);
+        break;
+      case 'addprice-aed':
+        await this.handleAddPriceAed(ctx, userId, text);
         break;
       case 'add-admin':
         await this.handleAddAdmin(ctx, userId, text);
@@ -1474,48 +1555,32 @@ export class BotUpdate {
     draft: OrderDraft,
     userUnitUsd: number,
   ): Promise<OrderDraft | null> {
-    // Authoritative USD→ETB rate comes from the `settings` table row whose
-    // key is `usd_to_etb` (SETTING_KEYS.USD_TO_ETB). Reading it live here
-    // — rather than reusing the draft's snapshot from creation time — means
-    // an admin who edits the rate in the middle of a reseller's draft sees
-    // their change applied to the very next price entry. The draft snapshot
-    // is only used as a safety fallback in the unlikely case the row was
-    // wiped between draft creation (when CalculatorService validated it)
-    // and now.
-    const dbRate = await this.settings.getNumber(SETTING_KEYS.USD_TO_ETB, 0);
-    const rate = dbRate > 0 ? dbRate : draft.rateUsed;
-    if (!rate || rate <= 0) {
-      this.fileLogger.logError(
-        'applyUserPrice',
-        new Error('USD_TO_ETB is not configured in settings'),
-        { userId },
-      );
+    try {
+      const priced = await this.calculator.priceFromEthUsd({
+        ethUsd: userUnitUsd,
+        productId: draft.productId,
+        categoryName: draft.categoryName,
+        deliveryEtb: draft.deliveryEtb,
+        quantity: draft.quantity,
+      });
+
+      return this.orderDraft.setUserPrice(userId, {
+        userUnitUsd,
+        unitEtb: priced.unitEtbPerUnit,
+        sellingEtb: priced.totalEtb,
+        totalEtb: priced.totalEtb,
+        marginPercent: priced.marginPercent,
+        rateUsed: priced.rateUsed,
+        dubaiUsd: priced.dubaiUsd,
+        dubaiAed: priced.dubaiAed,
+        factorUsed: priced.factorUsed,
+        confidence: priced.confidence,
+        triggers: priced.triggers,
+      });
+    } catch (err) {
+      this.fileLogger.logError('applyUserPrice', err, { userId });
       return null;
     }
-
-    // Pricing math (must match CalculatorService.calculateOrderTotalEtb):
-    //   1) baseEtb     = USD × rate
-    //   2) subtotal    = baseEtb + delivery        (delivery folded in first)
-    //   3) margin tier picked from subtotal
-    //   4) itemEtb     = subtotal × (1 + margin/100)  (margin applies to delivery too)
-    //   5) total       = ceil(itemEtb × qty)          (always round up)
-    const baseEtbPerUnit = userUnitUsd * rate;
-    const subtotalPerUnit = baseEtbPerUnit + draft.deliveryEtb;
-    const margin = resolveDynamicMarginPercent(subtotalPerUnit);
-    const itemEtbPerUnit = subtotalPerUnit * (1 + margin / 100);
-    const total = Math.ceil(itemEtbPerUnit * draft.quantity);
-
-    const sellingPerUnit = Math.ceil(itemEtbPerUnit);
-    const sellingTotal = total;
-
-    return this.orderDraft.setUserPrice(userId, {
-      userUnitUsd,
-      unitEtb: sellingPerUnit,
-      sellingEtb: sellingTotal,
-      totalEtb: total,
-      marginPercent: margin,
-      rateUsed: rate,
-    });
   }
 
   private parseUsdInput(raw: string): number | null {
@@ -1914,7 +1979,7 @@ export class BotUpdate {
       '<b>⚙️ Settings</b>',
       '',
       '<b>Pricing</b> (tap a button to edit)',
-      '• Profit margin (dynamic; tier picked from per-unit subtotal ETB incl. delivery, then applied to that whole subtotal):',
+      '• Profit margin (dynamic; tier picked from Dubai product cost ETB only; delivery added after):',
       '   – &lt; 3,000 ETB → <b>30%</b>',
       '   – 3,000–10,000 ETB → <b>20%</b>',
       '   – &gt; 10,000 ETB → <b>15%</b>',
@@ -1922,6 +1987,7 @@ export class BotUpdate {
       `• Default delivery fallback: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
       '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
+      `• USD → AED: <b>${await this.formatUsdToAedSetting()}</b>`,
       '',
       `<b>Admins</b> (${adminList.length})`,
     ];
@@ -1946,6 +2012,7 @@ export class BotUpdate {
         Markup.button.callback('✏️ Fallback delivery', 'admin:edit:delivery'),
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
+      [Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
     ];
@@ -2005,10 +2072,11 @@ export class BotUpdate {
       '',
       `Shipping fee: <b>${this.formatCategoryEtb(category.shippingCost)}</b>`,
       `Commission: <b>${this.formatCategoryEtb(category.commissionEtb)}</b>`,
+      `Dubai factor: <b>${this.formatDubaiFactor(category.dubaiFactor)}</b>`,
       '--------------------',
       `Delivery total: <b>${this.formatCategoryEtb(this.categoryDeliveryTotal(category))}</b>`,
       '',
-      '<i>Delivery total is added per item at checkout.</i>',
+      '<i>Delivery total is added per item at checkout. Dubai factor is used for reverse-engineering Dubai cost from Ethiopia-view USD.</i>',
     ].join('\n');
   }
 
@@ -2025,6 +2093,12 @@ export class BotUpdate {
         Markup.button.callback(
           '✏️ Edit commission',
           `admin:cat:comm-name:${token}`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          '✏️ Edit Dubai factor',
+          `admin:cat:factor-name:${token}`,
         ),
       ],
       [
@@ -2196,6 +2270,299 @@ export class BotUpdate {
     return { kind: 'ok', value: parsed };
   }
 
+  private async formatUsdToAedSetting(): Promise<string> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const aed = await this.settings.getNumber(
+      SETTING_KEYS.USD_TO_AED,
+      pricing.usdToAed ?? 3.67,
+    );
+    return aed > 0 ? String(aed) : 'not set';
+  }
+
+  private formatDubaiFactor(value: number | null): string {
+    return value == null ? '—' : value.toFixed(4);
+  }
+
+  private parseDubaiFactor(
+    text: string,
+  ):
+    | { kind: 'ok'; value: number | null }
+    | { kind: 'cancel' }
+    | { kind: 'error'; message: string } {
+    const normalized = text.trim().toLowerCase();
+    if (normalized === 'cancel') return { kind: 'cancel' };
+    if (normalized === 'clear' || normalized === 'null' || normalized === '-') {
+      return { kind: 'ok', value: null };
+    }
+
+    const cleaned = text.replace(/,/g, '.').trim();
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) {
+      return {
+        kind: 'error',
+        message:
+          'Invalid factor. Enter a decimal between 0.01 and 1.00 (e.g. 0.76), ' +
+          '<code>clear</code> to reset, or <code>cancel</code> to abort.',
+      };
+    }
+    const parsed = parseFloat(cleaned);
+    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+      return {
+        kind: 'error',
+        message: 'Factor must be between 0.01 and 1.00.',
+      };
+    }
+    return { kind: 'ok', value: parsed };
+  }
+
+  private async handleCategoryEditFactorPromptByName(
+    ctx: Context,
+    userId: number,
+    categoryName: string,
+  ): Promise<void> {
+    const category = await this.categories.findByName(categoryName);
+    if (!category) {
+      await this.safeAnswer(ctx, 'Category not found.', true);
+      return;
+    }
+
+    this.adminAuth.setPending(userId, 'edit-category-factor');
+    this.categoryEditState.setPending(userId, category.name);
+    await this.safeAnswer(ctx, '', false);
+
+    const body =
+      `<b>✏️ ${this.escapeHtml(category.name)} — Dubai factor</b>\n\n` +
+      `Current: <b>${this.formatDubaiFactor(category.dubaiFactor)}</b>\n\n` +
+      'Send the new factor (example: <code>0.76</code>).\n' +
+      'Send <code>clear</code> to remove, or <code>cancel</code> to return.';
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('← Back', this.categoryNameAction(category))],
+    ]);
+
+    try {
+      await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryEditFactor', err, { categoryName });
+    }
+  }
+
+  private async handleEditCategoryFactor(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const categoryKey = this.categoryEditState.getPending(userId);
+    if (!categoryKey) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Edit session expired. Open the category list again.');
+      return;
+    }
+
+    const parsed = this.parseDubaiFactor(text);
+    if (parsed.kind === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPending(userId);
+      if (typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)) {
+        await this.showCategoryDetailByName(ctx, categoryKey, 'reply');
+      } else {
+        await this.showCategoryDetail(ctx, categoryKey, 'reply');
+      }
+      return;
+    }
+    if (parsed.kind === 'error') {
+      await ctx.reply(parsed.message, { parse_mode: 'HTML' });
+      return;
+    }
+
+    const updated =
+      typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
+        ? await this.categories.setDubaiFactorByName(categoryKey, parsed.value)
+        : await this.categories.setDubaiFactor(categoryKey, parsed.value);
+    this.adminAuth.clearPending(userId);
+    this.categoryEditState.clearPending(userId);
+
+    if (!updated) {
+      await ctx.reply('Category not found.');
+      return;
+    }
+
+    await ctx.reply(
+      `✅ <b>${this.escapeHtml(updated.name)}</b> Dubai factor ` +
+        `<b>${this.formatDubaiFactor(updated.dubaiFactor)}</b>.`,
+      { parse_mode: 'HTML' },
+    );
+    await this.showCategoryDetailByName(ctx, updated.name, 'reply');
+  }
+
+  private buildAddPriceCategoryKeyboard(list: Category[]) {
+    const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+    for (const c of list) {
+      const token = this.categoryNameToken(c.name);
+      rows.push([
+        Markup.button.callback(
+          c.name.slice(0, 60),
+          `admin:addprice:cat:${token}`,
+        ),
+      ]);
+    }
+    rows.push([Markup.button.callback('✗ Cancel', 'admin:cat:cancel')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private async handleAddPriceLink(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    if (text.trim().toLowerCase() === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Cancelled.');
+      return;
+    }
+
+    let productId: string;
+    try {
+      const parsed = parseShein(text.trim());
+      productId = parsed.productId;
+    } catch (err) {
+      await ctx.reply(
+        (err as Error).message ||
+          'Please send a valid SHEIN product link ending with -p-<number>.html',
+      );
+      return;
+    }
+
+    this.addPriceState.setLink(userId, productId, text.trim());
+    this.adminAuth.clearPending(userId);
+
+    const list = await this.categories.findAll();
+    await ctx.reply('Choose the product category:', {
+      ...this.buildAddPriceCategoryKeyboard(list),
+    });
+  }
+
+  private async handleAddPriceEthUsd(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const draft = this.addPriceState.get(userId);
+    if (!draft?.categoryName) {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Session expired. Send /addprice again.');
+      return;
+    }
+
+    if (text.trim().toLowerCase() === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Cancelled.');
+      return;
+    }
+
+    const parsed = this.parseUsdInput(text);
+    if (parsed == null || parsed <= 0 || parsed > 100_000) {
+      await ctx.reply('Send a valid USD price (e.g. 12.50) or cancel.');
+      return;
+    }
+
+    this.addPriceState.setEthUsd(userId, parsed);
+    this.adminAuth.setPending(userId, 'addprice-aed');
+    await ctx.reply(
+      'Send the verified Dubai AED price (e.g. <code>35</code>).',
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  private async handleAddPriceAed(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const draft = this.addPriceState.get(userId);
+    if (!draft?.categoryName || draft.ethUsd == null) {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Session expired. Send /addprice again.');
+      return;
+    }
+
+    if (text.trim().toLowerCase() === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.addPriceState.clear(userId);
+      await ctx.reply('Cancelled.');
+      return;
+    }
+
+    const cleaned = text.replace(/,/g, '').trim();
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) {
+      await ctx.reply('Send a valid AED amount (e.g. 35) or cancel.');
+      return;
+    }
+    const aed = parseFloat(cleaned);
+    if (!Number.isFinite(aed) || aed <= 0 || aed > 1_000_000) {
+      await ctx.reply('AED price must be between 0.01 and 1,000,000.');
+      return;
+    }
+
+    const usdToAed = await this.dubaiEstimator.resolveUsdToAed();
+    const broadGroup = resolveBroadGroup(draft.categoryName);
+
+    await this.observations.recordObservation({
+      productId: draft.productId,
+      productLink: draft.productLink,
+      categoryName: draft.categoryName,
+      broadGroup,
+      ethUsd: draft.ethUsd,
+      aedPrice: aed,
+      usdToAed,
+    });
+
+    const count = await this.observations.countByProduct(draft.productId);
+    const dubaiUsd = aed / usdToAed;
+    const factor = draft.ethUsd > 0 ? dubaiUsd / draft.ethUsd : 1;
+
+    this.adminAuth.clearPending(userId);
+    this.addPriceState.clear(userId);
+
+    await ctx.reply(
+      `Recorded. <code>${draft.productId}</code> now has <b>${count}</b> observation(s).\n` +
+        `Implied factor <b>${factor.toFixed(4)}</b> (Dubai $${dubaiUsd.toFixed(2)} on Eth $${draft.ethUsd.toFixed(2)}).`,
+      { parse_mode: 'HTML' },
+    );
+  }
+
   private async requireAdmin(ctx: Context): Promise<boolean> {
     const from = ctx.from;
     if (!from) return false;
@@ -2228,7 +2595,7 @@ export class BotUpdate {
 
     if (draft.step === 'confirm') {
       lines.push('');
-      lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
+      lines.push(`<b>Estimated Cost: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
 
     lines.push('');

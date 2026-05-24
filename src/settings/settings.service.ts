@@ -9,6 +9,7 @@ export const SETTING_KEYS = {
   PROFIT_MARGIN: 'profit_margin_percent',
   DELIVERY_ETB: 'delivery_cost_etb',
   USD_TO_ETB: 'usd_to_etb',
+  USD_TO_AED: 'usd_to_aed',
 } as const;
 
 @Injectable()
@@ -27,6 +28,10 @@ export class SettingsService implements OnModuleInit {
       [SETTING_KEYS.PROFIT_MARGIN, String(pricing.profitMarginPercent)],
       [SETTING_KEYS.DELIVERY_ETB, String(pricing.deliveryCostEtb)],
       [SETTING_KEYS.USD_TO_ETB, pricing.usdToEtb != null ? String(pricing.usdToEtb) : null],
+      [
+        SETTING_KEYS.USD_TO_AED,
+        pricing.usdToAed != null ? String(pricing.usdToAed) : null,
+      ],
     ];
 
     for (const [key, value] of defaults) {

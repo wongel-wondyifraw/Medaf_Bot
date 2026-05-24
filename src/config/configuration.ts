@@ -26,6 +26,7 @@ export interface AppConfig {
   pricing: {
     profitMarginPercent: number;
     usdToEtb: number | null;
+    usdToAed: number | null;
     eurToEtb: number | null;
     gbpToEtb: number | null;
     deliveryCostEtb: number;
@@ -89,6 +90,7 @@ export default function configuration(): AppConfig {
     pricing: {
       profitMarginPercent: envNum('PROFIT_MARGIN', 30) ?? 30,
       usdToEtb: envNum('USD_TO_ETB', null),
+      usdToAed: envNum('USD_TO_AED', 3.67),
       eurToEtb: envNum('EUR_TO_ETB', null),
       gbpToEtb: envNum('GBP_TO_ETB', null),
       deliveryCostEtb: envNum('DELIVERY_COST_ETB', 500) ?? 500,

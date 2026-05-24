@@ -33,4 +33,14 @@ export class Category {
     transformer: numericTransformer,
   })
   commissionEtb!: number | null;
+
+  @Column({
+    type: 'numeric',
+    name: 'dubai_factor',
+    nullable: true,
+    precision: 6,
+    scale: 4,
+    transformer: numericTransformer,
+  })
+  dubaiFactor!: number | null;
 }
