@@ -2595,19 +2595,7 @@ export class BotUpdate {
 
     if (draft.step === 'confirm') {
       lines.push('');
-      lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
-      if (draft.dubaiUsd != null && draft.dubaiAed != null) {
-        lines.push(
-          `Estimated Dubai cost: <b>$${draft.dubaiUsd.toFixed(2)}</b> ` +
-            `(AED ${draft.dubaiAed.toFixed(2)})`,
-        );
-        lines.push(
-          `Confidence: <b>${this.dubaiEstimator.formatConfidence(draft.confidence ?? 'estimate')}</b>`,
-        );
-        const triggerLabel =
-          draft.triggers.length > 0 ? draft.triggers.join(', ') : 'none';
-        lines.push(`Triggers: <b>${this.escapeHtml(triggerLabel)}</b>`);
-      }
+      lines.push(`<b>Estimated Cost: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
 
     lines.push('');
