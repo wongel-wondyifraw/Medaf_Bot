@@ -11,6 +11,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { ResellersModule } from '../resellers/resellers.module';
 import { ScraperModule } from '../scraper/scraper.module';
 import { SettingsModule } from '../settings/settings.module';
+import { BotLifecycleService } from './bot-lifecycle.service';
 import { BotUpdate } from './bot.update';
 
 @Module({
@@ -41,6 +42,6 @@ import { BotUpdate } from './bot.update';
       },
     }),
   ],
-  providers: [BotUpdate, FileLoggerService],
+  providers: [BotUpdate, FileLoggerService, BotLifecycleService],
 })
 export class BotModule {}
