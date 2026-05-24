@@ -137,7 +137,10 @@ export class CategoriesService {
   }
 
   findById(id: number | string): Promise<Category | null> {
-    return this.repo.findOne({ where: { id } });
+    return this.repo
+      .createQueryBuilder('category')
+      .where('category.id = :id', { id })
+      .getOne();
   }
 
   findByName(name: string): Promise<Category | null> {
@@ -173,6 +176,20 @@ export class CategoriesService {
     return existing;
   }
 
+  async setShippingCostByName(
+    name: string,
+    cost: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findByName(name);
+    if (!existing) return null;
+    existing.shippingCost = cost;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category "${name}" (#${existing.id}) shipping_cost set to ${cost}`,
+    );
+    return existing;
+  }
+
   async setCommissionEtb(
     id: number | string,
     commission: number | null,
@@ -187,6 +204,20 @@ export class CategoriesService {
     return existing;
   }
 
+  async setCommissionEtbByName(
+    name: string,
+    commission: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findByName(name);
+    if (!existing) return null;
+    existing.commissionEtb = commission;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category "${name}" (#${existing.id}) commission_etb set to ${commission}`,
+    );
+    return existing;
+  }
+
   async clearCosts(id: number | string): Promise<Category | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
@@ -194,6 +225,16 @@ export class CategoriesService {
     existing.commissionEtb = null;
     await this.repo.save(existing);
     this.logger.log(`Category #${id} (${existing.name}) costs cleared`);
+    return existing;
+  }
+
+  async clearCostsByName(name: string): Promise<Category | null> {
+    const existing = await this.findByName(name);
+    if (!existing) return null;
+    existing.shippingCost = null;
+    existing.commissionEtb = null;
+    await this.repo.save(existing);
+    this.logger.log(`Category "${name}" (#${existing.id}) costs cleared`);
     return existing;
   }
 

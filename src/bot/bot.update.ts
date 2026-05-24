@@ -881,8 +881,57 @@ export class BotUpdate {
       return;
     }
 
-    // Category IDs may be integers (local SERIAL schema) or UUIDs (Render
-    // schema), so we accept any non-empty token after the verb prefix.
+    const nameMatch = suffix.match(/^name:(.+)$/);
+    if (nameMatch) {
+      const categoryName = this.decodeCategoryName(nameMatch[1]);
+      if (!categoryName) {
+        await this.safeAnswer(ctx, 'Invalid category.', true);
+        return;
+      }
+      this.adminAuth.clearPending(from.id);
+      this.categoryEditState.clearPending(from.id);
+      await this.safeAnswer(ctx, '', false);
+      await this.showCategoryDetailByName(ctx, categoryName, 'edit');
+      return;
+    }
+
+    const nameFieldMatch = suffix.match(/^(fee-name|comm-name):(.+)$/);
+    if (nameFieldMatch) {
+      const field =
+        nameFieldMatch[1] === 'comm-name' ? 'commission' : 'shipping fee';
+      const categoryName = this.decodeCategoryName(nameFieldMatch[2]);
+      if (!categoryName) {
+        await this.safeAnswer(ctx, 'Invalid category.', true);
+        return;
+      }
+      await this.handleCategoryEditFieldPromptByName(
+        ctx,
+        from.id,
+        field,
+        categoryName,
+      );
+      return;
+    }
+
+    const nameClearMatch = suffix.match(/^clear-(fee-name|comm-name|both-name):(.+)$/);
+    if (nameClearMatch) {
+      const field =
+        nameClearMatch[1] === 'fee-name'
+          ? 'fee'
+          : nameClearMatch[1] === 'comm-name'
+            ? 'comm'
+            : 'both';
+      const categoryName = this.decodeCategoryName(nameClearMatch[2]);
+      if (!categoryName) {
+        await this.safeAnswer(ctx, 'Invalid category.', true);
+        return;
+      }
+      await this.handleCategoryClearByName(ctx, from.id, field, categoryName);
+      return;
+    }
+
+    // Legacy id-based callbacks. Render has used UUID ids while local dev uses
+    // integer ids, so these are kept only for old chat messages.
     const clearMatch = suffix.match(/^clear-(fee|comm|both):(.+)$/);
     if (clearMatch) {
       const field = clearMatch[1] as 'fee' | 'comm' | 'both';
@@ -969,6 +1018,48 @@ export class BotUpdate {
     }
   }
 
+  private async handleCategoryEditFieldPromptByName(
+    ctx: Context,
+    userId: number,
+    field: 'commission' | 'shipping fee',
+    categoryName: string,
+  ): Promise<void> {
+    const category = await this.categories.findByName(categoryName);
+    if (!category) {
+      await this.safeAnswer(ctx, 'Category not found.', true);
+      return;
+    }
+
+    this.adminAuth.setPending(
+      userId,
+      field === 'commission' ? 'edit-category-commission' : 'edit-category-fee',
+    );
+    this.categoryEditState.setPending(userId, category.name);
+    await this.safeAnswer(ctx, '', false);
+
+    const current =
+      field === 'commission' ? category.commissionEtb : category.shippingCost;
+    const body =
+      `<b>✏️ ${this.escapeHtml(category.name)} — ${field}</b>\n\n` +
+      `Current: <b>${this.formatCategoryEtb(current)}</b>\n\n` +
+      'Send the new amount in ETB (example: <code>600</code>).\n' +
+      'Send <code>clear</code> to remove this value, or <code>cancel</code> to return.';
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('← Back', this.categoryNameAction(category))],
+    ]);
+
+    try {
+      await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryEditFieldByName', err, {
+        categoryName,
+        field,
+      });
+    }
+  }
+
   private async handleCategoryClear(
     ctx: Context,
     userId: number,
@@ -999,6 +1090,38 @@ export class BotUpdate {
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('adminCategoryClear', err, { categoryId, field });
+    }
+  }
+
+  private async handleCategoryClearByName(
+    ctx: Context,
+    userId: number,
+    field: 'fee' | 'comm' | 'both',
+    categoryName: string,
+  ): Promise<void> {
+    this.adminAuth.clearPending(userId);
+    this.categoryEditState.clearPending(userId);
+    try {
+      const updated =
+        field === 'fee'
+          ? await this.categories.setShippingCostByName(categoryName, null)
+          : field === 'comm'
+            ? await this.categories.setCommissionEtbByName(categoryName, null)
+            : await this.categories.clearCostsByName(categoryName);
+      if (!updated) {
+        await this.safeAnswer(ctx, 'Category not found.', true);
+        return;
+      }
+      const label =
+        field === 'fee' ? 'shipping fee' : field === 'comm' ? 'commission' : 'costs';
+      await this.safeAnswer(ctx, `Cleared ${label} for ${updated.name}.`, false);
+      await this.showCategoryDetailByName(ctx, updated.name, 'edit');
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryClearByName', err, {
+        categoryName,
+        field,
+      });
     }
   }
 
@@ -1417,8 +1540,8 @@ export class BotUpdate {
       return;
     }
 
-    const categoryId = this.categoryEditState.getPending(userId);
-    if (!categoryId) {
+    const categoryKey = this.categoryEditState.getPending(userId);
+    if (!categoryKey) {
       this.adminAuth.clearPending(userId);
       await ctx.reply('Edit session expired. Open the category list again.');
       return;
@@ -1428,7 +1551,11 @@ export class BotUpdate {
     if (parsed.kind === 'cancel') {
       this.adminAuth.clearPending(userId);
       this.categoryEditState.clearPending(userId);
-      await this.showCategoryDetail(ctx, categoryId, 'reply');
+      if (typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)) {
+        await this.showCategoryDetailByName(ctx, categoryKey, 'reply');
+      } else {
+        await this.showCategoryDetail(ctx, categoryKey, 'reply');
+      }
       return;
     }
     if (parsed.kind === 'error') {
@@ -1438,8 +1565,12 @@ export class BotUpdate {
 
     const updated =
       field === 'fee'
-        ? await this.categories.setShippingCost(categoryId, parsed.value)
-        : await this.categories.setCommissionEtb(categoryId, parsed.value);
+        ? typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
+          ? await this.categories.setShippingCostByName(categoryKey, parsed.value)
+          : await this.categories.setShippingCost(categoryKey, parsed.value)
+        : typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
+          ? await this.categories.setCommissionEtbByName(categoryKey, parsed.value)
+          : await this.categories.setCommissionEtb(categoryKey, parsed.value);
     this.adminAuth.clearPending(userId);
     this.categoryEditState.clearPending(userId);
 
@@ -1456,14 +1587,14 @@ export class BotUpdate {
             field === 'fee' ? updated.shippingCost : updated.commissionEtb,
           );
     this.logger.log(
-      `Category #${categoryId} (${updated.name}) ${label} ${formatted} by admin ${userId}`,
+      `Category ${categoryKey} (${updated.name}) ${label} ${formatted} by admin ${userId}`,
     );
     await ctx.reply(
       `✅ <b>${this.escapeHtml(updated.name)}</b> ${label} ${formatted}.`,
       { parse_mode: 'HTML' },
     );
 
-    await this.showCategoryDetail(ctx, categoryId, 'reply');
+    await this.showCategoryDetailByName(ctx, updated.name, 'reply');
   }
 
   private async handleAdminGrant(
@@ -1861,7 +1992,7 @@ export class BotUpdate {
       const total = this.categoryDeliveryTotal(c);
       const tag = total > 0 ? `${total.toLocaleString('en-US')} ETB` : '—';
       const label = `${c.name} · ${tag}`.slice(0, 60);
-      rows.push([Markup.button.callback(label, `admin:cat:${c.id}`)]);
+      rows.push([Markup.button.callback(label, this.categoryNameAction(c))]);
     }
     rows.push([Markup.button.callback('➕ Add category', 'admin:cat:add')]);
     rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
@@ -1882,30 +2013,31 @@ export class BotUpdate {
   }
 
   private categoryDetailKeyboard(category: Category) {
+    const token = this.categoryNameToken(category.name);
     return Markup.inlineKeyboard([
       [
         Markup.button.callback(
           '✏️ Edit shipping fee',
-          `admin:cat:fee:${category.id}`,
+          `admin:cat:fee-name:${token}`,
         ),
       ],
       [
         Markup.button.callback(
           '✏️ Edit commission',
-          `admin:cat:comm:${category.id}`,
+          `admin:cat:comm-name:${token}`,
         ),
       ],
       [
         Markup.button.callback(
           '🗑 Clear shipping fee',
-          `admin:cat:clear-fee:${category.id}`,
+          `admin:cat:clear-fee-name:${token}`,
         ),
         Markup.button.callback(
           '🗑 Clear commission',
-          `admin:cat:clear-comm:${category.id}`,
+          `admin:cat:clear-comm-name:${token}`,
         ),
       ],
-      [Markup.button.callback('🗑 Clear both', `admin:cat:clear-both:${category.id}`)],
+      [Markup.button.callback('🗑 Clear both', `admin:cat:clear-both-name:${token}`)],
       [Markup.button.callback('← Back to list', 'admin:categories')],
     ]);
   }
@@ -1951,6 +2083,56 @@ export class BotUpdate {
       return;
     }
     await ctx.reply(body, options);
+  }
+
+  private async showCategoryDetailByName(
+    ctx: Context,
+    categoryName: string,
+    mode: 'edit' | 'reply',
+  ): Promise<void> {
+    const category = await this.categories.findByName(categoryName);
+    if (!category) {
+      if (mode === 'edit') {
+        await this.safeAnswer(
+          ctx,
+          'Category not found. Re-open Settings → Categories.',
+          true,
+        );
+      } else {
+        await ctx.reply('Category not found. Re-open Settings → Categories.');
+      }
+      return;
+    }
+
+    const body = this.buildCategoryDetailMessage(category);
+    const options = { parse_mode: 'HTML' as const, ...this.categoryDetailKeyboard(category) };
+    if (mode === 'edit') {
+      try {
+        await ctx.editMessageText(body, options);
+      } catch (err) {
+        if (this.isMessageNotModifiedError(err)) return;
+        this.fileLogger.logError('showCategoryDetailByName', err, { categoryName });
+      }
+      return;
+    }
+    await ctx.reply(body, options);
+  }
+
+  private categoryNameAction(category: Category): string {
+    return `admin:cat:name:${this.categoryNameToken(category.name)}`;
+  }
+
+  private categoryNameToken(name: string): string {
+    return encodeURIComponent(name);
+  }
+
+  private decodeCategoryName(token: string): string | null {
+    try {
+      const decoded = decodeURIComponent(token);
+      return decoded.trim() ? decoded : null;
+    } catch {
+      return null;
+    }
   }
 
   private categoryBreakdown(category: Category): string {
