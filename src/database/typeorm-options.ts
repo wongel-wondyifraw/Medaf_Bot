@@ -20,6 +20,7 @@ import { CategoryCommission1780000000000 } from '../migrations/1780000000000-Cat
 import { CosmeticsCategory1780100000000 } from '../migrations/1780100000000-CosmeticsCategory';
 import { CategoryDubaiFactor1780200000000 } from '../migrations/1780200000000-CategoryDubaiFactor';
 import { AedObservations1780300000000 } from '../migrations/1780300000000-AedObservations';
+import { RescaleDubaiFactor1780400000000 } from '../migrations/1780400000000-RescaleDubaiFactor';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -49,6 +50,7 @@ export function buildTypeOrmOptions(opts: {
       CosmeticsCategory1780100000000,
       CategoryDubaiFactor1780200000000,
       AedObservations1780300000000,
+      RescaleDubaiFactor1780400000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

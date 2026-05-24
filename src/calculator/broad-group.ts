@@ -1,11 +1,13 @@
 export type BroadGroup = 'clothing' | 'shoes' | 'accessories' | 'beauty' | 'home';
 
+// Defaults rescaled by 0.825 (= 165 / 200) so calculations match the
+// previous 165 ETB/USD math while the live rate stays at 200.
 export const DEFAULT_DUBAI_FACTOR_BY_GROUP: Record<BroadGroup, number> = {
-  clothing: 0.76,
-  shoes: 0.82,
-  accessories: 0.85,
-  beauty: 0.88,
-  home: 0.9,
+  clothing: 0.627,
+  shoes: 0.6765,
+  accessories: 0.70125,
+  beauty: 0.726,
+  home: 0.7425,
 };
 
 /** Maps catalog category names to broad groups for history aggregation. */
