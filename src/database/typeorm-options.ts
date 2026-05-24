@@ -17,6 +17,7 @@ import { RenameProductUrlToLink1779700000000 } from '../migrations/1779700000000
 import { OrderUsdPrices1779800000000 } from '../migrations/1779800000000-OrderUsdPrices';
 import { CategoryCommission1780000000000 } from '../migrations/1780000000000-CategoryCommission';
 import { CosmeticsCategory1780100000000 } from '../migrations/1780100000000-CosmeticsCategory';
+import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
   url: string;
@@ -45,7 +46,8 @@ export function buildTypeOrmOptions(opts: {
       CosmeticsCategory1780100000000,
     ],
     synchronize: false,
-    logging: opts.logging,
+    logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],
+    logger: new TypeOrmConsoleLogger(opts.logging),
     migrationsRun: opts.runMigrations,
   };
 }

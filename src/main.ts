@@ -5,6 +5,18 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/http-exception.filter';
 import { FileLoggerService } from './common/logger.service';
 
+interface MinimalHttpRequest {
+  method?: string;
+  originalUrl?: string;
+  url?: string;
+  ip?: string;
+}
+
+interface MinimalHttpResponse {
+  statusCode?: number;
+  on(event: 'finish', listener: () => void): void;
+}
+
 /**
  * Process-level safety net: any uncaught exception or unhandled rejection
  * gets logged loudly to the console (and to errors.log if the file logger
@@ -12,16 +24,19 @@ import { FileLoggerService } from './common/logger.service';
  * silently swallows async errors that escape `await` boundaries — the
  * "silent failure" pattern the user reported.
  */
-function installProcessGuards(logger: Logger, fileLogger: FileLoggerService | null): void {
+function installProcessGuards(
+  logger: Logger,
+  getFileLogger: () => FileLoggerService | null,
+): void {
   process.on('uncaughtException', (err) => {
     logger.error(`UNCAUGHT EXCEPTION: ${err?.message || err}`);
-    fileLogger?.logError('uncaughtException', err);
+    getFileLogger()?.logError('uncaughtException', err);
   });
 
   process.on('unhandledRejection', (reason) => {
     const message = reason instanceof Error ? reason.message : String(reason);
     logger.error(`UNHANDLED REJECTION: ${message}`);
-    fileLogger?.logError('unhandledRejection', reason);
+    getFileLogger()?.logError('unhandledRejection', reason);
   });
 
   process.on('warning', (warning) => {
@@ -29,11 +44,35 @@ function installProcessGuards(logger: Logger, fileLogger: FileLoggerService | nu
   });
 }
 
+function installHttpRequestLogger(app: {
+  use(handler: (req: MinimalHttpRequest, res: MinimalHttpResponse, next: () => void) => void): void;
+}): void {
+  const logger = new Logger('HTTP');
+
+  app.use((req, res, next) => {
+    const start = Date.now();
+    const method = req.method || 'HTTP';
+    const url = req.originalUrl || req.url || '';
+
+    logger.log(`-> ${method} ${url} ip=${req.ip || 'unknown'}`);
+
+    res.on('finish', () => {
+      const ms = Date.now() - start;
+      const status = res.statusCode || 0;
+      const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'log';
+      logger[level](`<- ${method} ${url} ${status} ${ms}ms`);
+    });
+
+    next();
+  });
+}
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
+  let fileLogger: FileLoggerService | null = null;
   // Install minimal guards immediately so even errors before Nest finishes
   // booting are still printed.
-  installProcessGuards(logger, null);
+  installProcessGuards(logger, () => fileLogger);
 
   try {
     const app = await NestFactory.create(AppModule, {
@@ -42,11 +81,11 @@ async function bootstrap() {
     });
     app.enableShutdownHooks();
 
-    const fileLogger = app.get(FileLoggerService);
-    // Re-install with the real file logger so future failures are persisted.
-    installProcessGuards(logger, fileLogger);
+    const activeFileLogger = app.get(FileLoggerService);
+    fileLogger = activeFileLogger;
 
-    app.useGlobalFilters(new AllExceptionsFilter(fileLogger));
+    app.useGlobalFilters(new AllExceptionsFilter(activeFileLogger));
+    installHttpRequestLogger(app);
 
     const port = parseInt(process.env.PORT || '3000', 10);
     await app.listen(port, '0.0.0.0');
