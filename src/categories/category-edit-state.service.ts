@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 const STATE_TTL_MS = 5 * 60 * 1000;
 
 interface PendingCategoryEdit {
-  categoryId: number;
+  categoryId: number | string;
   since: number;
 }
 
@@ -23,11 +23,11 @@ export class CategoryEditStateService {
   private readonly newNameState = new Map<number, PendingNewCategory>();
   private readonly newFeeState = new Map<number, PendingNewCategoryFee>();
 
-  setPending(userId: number, categoryId: number): void {
+  setPending(userId: number, categoryId: number | string): void {
     this.state.set(userId, { categoryId, since: Date.now() });
   }
 
-  getPending(userId: number): number | null {
+  getPending(userId: number): number | string | null {
     const entry = this.state.get(userId);
     if (!entry) return null;
     if (Date.now() - entry.since > STATE_TTL_MS) {

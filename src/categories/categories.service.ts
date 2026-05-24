@@ -136,7 +136,7 @@ export class CategoriesService {
     return this.repo.find({ order: { name: 'ASC' } });
   }
 
-  findById(id: number): Promise<Category | null> {
+  findById(id: number | string): Promise<Category | null> {
     return this.repo.findOne({ where: { id } });
   }
 
@@ -161,7 +161,10 @@ export class CategoriesService {
     return { category: saved };
   }
 
-  async setShippingCost(id: number, cost: number | null): Promise<Category | null> {
+  async setShippingCost(
+    id: number | string,
+    cost: number | null,
+  ): Promise<Category | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
     existing.shippingCost = cost;
@@ -170,7 +173,10 @@ export class CategoriesService {
     return existing;
   }
 
-  async setCommissionEtb(id: number, commission: number | null): Promise<Category | null> {
+  async setCommissionEtb(
+    id: number | string,
+    commission: number | null,
+  ): Promise<Category | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
     existing.commissionEtb = commission;
@@ -181,7 +187,7 @@ export class CategoriesService {
     return existing;
   }
 
-  async clearCosts(id: number): Promise<Category | null> {
+  async clearCosts(id: number | string): Promise<Category | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
     existing.shippingCost = null;

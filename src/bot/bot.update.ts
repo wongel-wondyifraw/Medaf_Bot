@@ -881,54 +881,36 @@ export class BotUpdate {
       return;
     }
 
-    const clearMatch = suffix.match(/^clear-(fee|comm|both):(\d+)$/);
+    // Category IDs may be integers (local SERIAL schema) or UUIDs (Render
+    // schema), so we accept any non-empty token after the verb prefix.
+    const clearMatch = suffix.match(/^clear-(fee|comm|both):(.+)$/);
     if (clearMatch) {
       const field = clearMatch[1] as 'fee' | 'comm' | 'both';
-      const categoryId = parseInt(clearMatch[2], 10);
-      await this.handleCategoryClear(ctx, from.id, field, categoryId);
+      await this.handleCategoryClear(ctx, from.id, field, clearMatch[2]);
       return;
     }
 
     // Legacy keyboards (pre-fee/commission split) sent `clear:<id>` to wipe
     // the single shipping cost. Treat it as "clear both" so old chat
     // messages keep working after redeploy.
-    const legacyClearMatch = suffix.match(/^clear:(\d+)$/);
+    const legacyClearMatch = suffix.match(/^clear:(.+)$/);
     if (legacyClearMatch) {
-      const categoryId = parseInt(legacyClearMatch[1], 10);
-      await this.handleCategoryClear(ctx, from.id, 'both', categoryId);
+      await this.handleCategoryClear(ctx, from.id, 'both', legacyClearMatch[1]);
       return;
     }
 
-    const fieldMatch = suffix.match(/^(fee|comm):(\d+)$/);
+    const fieldMatch = suffix.match(/^(fee|comm):(.+)$/);
     if (fieldMatch) {
       const field = fieldMatch[1] === 'comm' ? 'commission' : 'shipping fee';
-      const categoryId = parseInt(fieldMatch[2], 10);
-      await this.handleCategoryEditFieldPrompt(ctx, from.id, field, categoryId);
+      await this.handleCategoryEditFieldPrompt(ctx, from.id, field, fieldMatch[2]);
       return;
     }
 
-    if (/^\d+$/.test(suffix)) {
-      const categoryId = parseInt(suffix, 10);
-      this.adminAuth.clearPending(from.id);
-      this.categoryEditState.clearPending(from.id);
-      await this.safeAnswer(ctx, '', false);
-      await this.showCategoryDetail(ctx, categoryId, 'edit');
-      return;
-    }
-
-    this.logger.warn(
-      `Unknown admin:cat suffix: [${suffix}] raw=[${rawSuffix}] userId=${from.id}`,
-    );
-    this.fileLogger.logError(
-      'adminCategoryUnknownSuffix',
-      new Error(`Unknown admin:cat suffix: ${suffix}`),
-      { rawSuffix, suffix, userId: from.id },
-    );
-    await this.safeAnswer(
-      ctx,
-      `Unknown category action: ${suffix.slice(0, 40)}. Re-open Settings → Categories.`,
-      true,
-    );
+    // Anything else is treated as a raw category id (digits or UUID).
+    this.adminAuth.clearPending(from.id);
+    this.categoryEditState.clearPending(from.id);
+    await this.safeAnswer(ctx, '', false);
+    await this.showCategoryDetail(ctx, suffix, 'edit');
   }
 
   private async showCategoriesList(ctx: Context): Promise<void> {
@@ -948,9 +930,9 @@ export class BotUpdate {
     ctx: Context,
     userId: number,
     field: 'commission' | 'shipping fee',
-    categoryId: number,
+    categoryId: number | string,
   ): Promise<void> {
-    if (!categoryId) {
+    if (categoryId === '' || categoryId == null) {
       await this.safeAnswer(ctx, 'Invalid category.', true);
       return;
     }
@@ -991,7 +973,7 @@ export class BotUpdate {
     ctx: Context,
     userId: number,
     field: 'fee' | 'comm' | 'both',
-    categoryId: number,
+    categoryId: number | string,
   ): Promise<void> {
     this.adminAuth.clearPending(userId);
     this.categoryEditState.clearPending(userId);
@@ -1930,15 +1912,29 @@ export class BotUpdate {
 
   private async showCategoryDetail(
     ctx: Context,
-    categoryId: number,
+    categoryId: number | string,
     mode: 'edit' | 'reply',
   ): Promise<void> {
-    const category = await this.categories.findById(categoryId);
+    let category: Category | null = null;
+    try {
+      category = await this.categories.findById(categoryId);
+    } catch (err) {
+      // Some old chat keyboards may contain ids that no longer match the
+      // current schema (e.g. integer vs UUID after a DB swap). Log and bail
+      // gracefully instead of crashing the bot.
+      this.fileLogger.logError('showCategoryDetail.findById', err, {
+        categoryId,
+      });
+    }
     if (!category) {
       if (mode === 'edit') {
-        await this.safeAnswer(ctx, 'Category not found.', true);
+        await this.safeAnswer(
+          ctx,
+          'Category not found. Re-open Settings → Categories.',
+          true,
+        );
       } else {
-        await ctx.reply('Category not found.');
+        await ctx.reply('Category not found. Re-open Settings → Categories.');
       }
       return;
     }
