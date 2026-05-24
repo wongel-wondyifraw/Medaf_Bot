@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import {
+  defaultDubaiFactorForGroup,
+  resolveBroadGroup,
+} from '../calculator/broad-group';
 import { Category } from './category.entity';
 
 /**
@@ -156,7 +160,13 @@ export class CategoriesService {
     if (trimmed.length < 1 || trimmed.length > 80) return { error: 'invalid' };
     const existing = await this.findByName(trimmed);
     if (existing) return { error: 'duplicate' };
-    const saved = await this.repo.save({ name: trimmed, shippingCost, commissionEtb });
+    const broadGroup = resolveBroadGroup(trimmed);
+    const saved = await this.repo.save({
+      name: trimmed,
+      shippingCost,
+      commissionEtb,
+      dubaiFactor: defaultDubaiFactorForGroup(broadGroup),
+    });
     this.logger.log(
       `Category created: ${saved.name} (#${saved.id}) ` +
         `shipping_cost=${shippingCost ?? 'null'} commission_etb=${commissionEtb ?? 'null'}`,
@@ -235,6 +245,32 @@ export class CategoriesService {
     existing.commissionEtb = null;
     await this.repo.save(existing);
     this.logger.log(`Category "${name}" (#${existing.id}) costs cleared`);
+    return existing;
+  }
+
+  async setDubaiFactor(
+    id: number | string,
+    factor: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    existing.dubaiFactor = factor;
+    await this.repo.save(existing);
+    this.logger.log(`Category #${id} (${existing.name}) dubai_factor set to ${factor}`);
+    return existing;
+  }
+
+  async setDubaiFactorByName(
+    name: string,
+    factor: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findByName(name);
+    if (!existing) return null;
+    existing.dubaiFactor = factor;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category "${name}" (#${existing.id}) dubai_factor set to ${factor}`,
+    );
     return existing;
   }
 

@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { AppConfig } from '../config/configuration';
 import { CalculatorModule } from '../calculator/calculator.module';
+import { ObservationsModule } from '../observations/observations.module';
 import { FileLoggerService } from '../common/logger.service';
 import { AdminsModule } from '../admins/admins.module';
 import { CategoriesModule } from '../categories/categories.module';
@@ -21,6 +22,7 @@ import { BotUpdate } from './bot.update';
     AdminsModule,
     ScraperModule,
     CalculatorModule,
+    ObservationsModule,
     SettingsModule,
     CategoriesModule,
     HealthModule,

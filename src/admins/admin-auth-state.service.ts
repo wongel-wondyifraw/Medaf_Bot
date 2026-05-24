@@ -13,7 +13,12 @@ export type PendingAction =
   | 'add-category'
   | 'add-category-cost'
   | 'add-category-fee'
-  | 'add-category-commission';
+  | 'add-category-commission'
+  | 'edit-category-factor'
+  | 'edit-rate-aed'
+  | 'addprice-link'
+  | 'addprice-eth-usd'
+  | 'addprice-aed';
 
 interface PendingState {
   action: PendingAction;
