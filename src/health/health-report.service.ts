@@ -86,10 +86,9 @@ export class HealthReportService {
    * `parse_mode: 'HTML'` (all dynamic segments are escaped).
    */
   async buildReportMessage(): Promise<string> {
-    const [orderStats, healthBatches, pendingPings, criticalLogs] = await Promise.all([
+    const [orderStats, healthBatches, criticalLogs] = await Promise.all([
       this.orders.getReport(),
       this.healthLog.getReport(3),
-      Promise.resolve(this.healthLog.getPending()),
       Promise.resolve(this.readCriticalLogs(LOG_LOOKBACK_MS)),
     ]);
 
@@ -117,27 +116,15 @@ export class HealthReportService {
       `• Revenue (non-cancelled): <b>${orderStats.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
       `• Last 24h: <b>${orderStats.last24hCount}</b> order(s)`,
       '',
-      '<b>Health pings</b>',
+      '<b>Database wake-up</b>',
     ];
 
-    if (pendingPings.pingCount > 0) {
-      const since = pendingPings.firstPingAt
-        ? formatGmtPlus3(pendingPings.firstPingAt)
-        : '—';
-      lines.push(
-        `• In-memory batch: <b>${pendingPings.pingCount}</b> ping(s) since ${this.escapeHtml(since)}`,
-      );
-    } else {
-      lines.push('• In-memory batch: <i>empty (awaiting pings)</i>');
-    }
-
     if (healthBatches.length === 0) {
-      lines.push('• Last flushed batch: <i>none yet</i>');
+      lines.push('• Last wake heartbeat: <i>none yet</i>');
     } else {
       const latest = healthBatches[0];
       lines.push(
-        `• Last flushed: <b>${latest.pingCount}</b> pings ` +
-          `(${this.escapeHtml(formatGmtPlus3(latest.firstPingAt))} → ${this.escapeHtml(formatGmtPlus3(latest.lastPingAt))})`,
+        `• Last wake heartbeat: <b>${this.escapeHtml(formatGmtPlus3(latest.createdAt))}</b>`,
       );
     }
 

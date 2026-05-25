@@ -8,13 +8,11 @@ export class HealthController {
 
   @Get('health')
   getHealth(): string {
-    this.healthLog.recordPing();
     return 'OK';
   }
 
   @Get()
   getRoot(): string {
-    this.healthLog.recordPing();
     return 'OK';
   }
 
