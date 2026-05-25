@@ -28,9 +28,12 @@ export class AdminNotificationsService {
     for (const admin of allAdmins) {
       try {
         const since = admin.lastNotifiedAt || admin.addedAt;
-        const newOrders = await this.orders.findCreatedSince(since);
+        const newOrders = await this.orders.findCreatedSince(since, 'pending');
         if (newOrders.length === 0) {
-          this.logger.debug(`No new orders for admin ${admin.id} since ${since.toISOString()}.`);
+          this.logger.debug(
+            `No new pending orders for admin ${admin.id} since ${since.toISOString()}.`,
+          );
+          await this.admins.updateLastNotified(admin.id, now);
           continue;
         }
 
@@ -40,7 +43,7 @@ export class AdminNotificationsService {
         });
         await this.admins.updateLastNotified(admin.id, now);
         this.logger.log(
-          `Sent ${newOrders.length} new order(s) digest to admin ${admin.id}.`,
+          `Sent ${newOrders.length} new pending order(s) digest to admin ${admin.id}.`,
         );
       } catch (err) {
         const e = err as Error;
@@ -52,7 +55,7 @@ export class AdminNotificationsService {
   private formatDigest(since: Date, orders: Awaited<ReturnType<OrdersService['findCreatedSince']>>): string {
     const sinceStr = formatGmtPlus3(since);
     const lines: string[] = [
-      `<b>📦 ${orders.length} new order(s) since ${this.escapeHtml(sinceStr)}</b>`,
+      `<b>📦 ${orders.length} new pending order(s) since ${this.escapeHtml(sinceStr)}</b>`,
       '',
     ];
     const previewLimit = 15;
@@ -61,7 +64,7 @@ export class AdminNotificationsService {
       const name = this.escapeHtml(r?.fullName || 'unknown');
       const phone = this.escapeHtml(r?.phoneNumber || '');
       const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
-      const statusTag = o.status === 'pending' ? '⏳' : o.status === 'cancelled' ? '✗' : '✓';
+      const statusTag = '⏳';
 
       const total = o.sellingEtb.toLocaleString('en-US');
       const priceBase =

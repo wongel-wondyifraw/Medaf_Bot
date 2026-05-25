@@ -69,13 +69,18 @@ export class OrdersService {
       .getMany();
   }
 
-  findCreatedSince(since: Date): Promise<Order[]> {
-    return this.repo
+  findCreatedSince(
+    since: Date,
+    status?: 'pending' | 'cancelled' | 'completed',
+  ): Promise<Order[]> {
+    const qb = this.repo
       .createQueryBuilder('o')
       .leftJoinAndSelect('o.reseller', 'reseller')
-      .where('o.created_at > :since', { since })
-      .orderBy('o.created_at', 'ASC')
-      .getMany();
+      .where('o.created_at > :since', { since });
+    if (status) {
+      qb.andWhere('o.status = :status', { status });
+    }
+    return qb.orderBy('o.created_at', 'ASC').getMany();
   }
 
   async getReport(): Promise<OrdersReport> {
