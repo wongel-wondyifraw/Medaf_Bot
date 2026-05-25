@@ -7,6 +7,7 @@ import { AppConfig } from '../config/configuration';
 @Injectable()
 export class BotWebhookService {
   private readonly logger = new Logger(BotWebhookService.name);
+  private shutdownPatchInstalled = false;
 
   constructor(
     @InjectBot() private readonly bot: Telegraf,
@@ -21,6 +22,7 @@ export class BotWebhookService {
     if (!this.isEnabled()) return;
 
     const path = this.webhookPath();
+    this.installWebhookShutdownPatch();
     // Important: register at the application root, not at `path`.
     // Express's `app.use(path, mw)` strips the mount prefix before forwarding,
     // which would make Telegraf's internal `safeCompare(this.path, req.url)`
@@ -55,5 +57,27 @@ export class BotWebhookService {
       );
     }
     return `${base.replace(/\/+$/, '')}${this.webhookPath()}`;
+  }
+
+  private installWebhookShutdownPatch(): void {
+    if (this.shutdownPatchInstalled) return;
+
+    const originalStop = this.bot.stop.bind(this.bot);
+    this.bot.stop = (reason?: string) => {
+      try {
+        return originalStop(reason);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message === 'Bot is not running!') {
+          this.logger.log(
+            'Telegram bot was not launched by Telegraf; webhook mode is handled by Nest HTTP server.',
+          );
+          return;
+        }
+        throw err;
+      }
+    };
+
+    this.shutdownPatchInstalled = true;
   }
 }
