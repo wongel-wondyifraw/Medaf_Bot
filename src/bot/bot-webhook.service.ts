@@ -21,7 +21,12 @@ export class BotWebhookService {
     if (!this.isEnabled()) return;
 
     const path = this.webhookPath();
-    app.use(path, this.bot.webhookCallback(path));
+    // Important: register at the application root, not at `path`.
+    // Express's `app.use(path, mw)` strips the mount prefix before forwarding,
+    // which would make Telegraf's internal `safeCompare(this.path, req.url)`
+    // see `req.url === '/'` and reject every update. Letting the callback
+    // handle filtering itself ensures it matches the full incoming URL.
+    app.use(this.bot.webhookCallback(path));
     this.logger.log(`Telegram webhook endpoint mounted at ${path}`);
   }
 
