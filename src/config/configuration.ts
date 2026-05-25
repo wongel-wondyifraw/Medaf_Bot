@@ -6,6 +6,9 @@ export interface AppConfig {
   proxyUrl: string;
   adminChatId: string;
   adminPassword: string;
+  telegramUseWebhook: boolean;
+  telegramWebhookUrl: string;
+  telegramWebhookPath: string;
   /**
    * Telegram chat ID that receives the daily health report and is the only
    * user who sees the "🩺 Health Report" button in the admin panel. Defaults
@@ -67,6 +70,9 @@ export default function configuration(): AppConfig {
     proxyUrl: envStr('PROXY_URL'),
     adminChatId: envStr('ADMIN_CHAT_ID'),
     adminPassword: envStr('ADMIN_PASSWORD'),
+    telegramUseWebhook: envBool('TELEGRAM_USE_WEBHOOK', false),
+    telegramWebhookUrl: envStr('TELEGRAM_WEBHOOK_URL'),
+    telegramWebhookPath: envStr('TELEGRAM_WEBHOOK_PATH', '/telegram/webhook'),
     healthReportChatId: envStr('HEALTH_REPORT_CHAT_ID', '1041346091'),
     database: {
       url: envStr('DATABASE_URL'),

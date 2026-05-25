@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { BotWebhookService } from './bot/bot-webhook.service';
 import { AllExceptionsFilter } from './common/http-exception.filter';
 import { FileLoggerService } from './common/logger.service';
 
@@ -87,8 +88,12 @@ async function bootstrap() {
     app.useGlobalFilters(new AllExceptionsFilter(activeFileLogger));
     installHttpRequestLogger(app);
 
+    const botWebhook = app.get(BotWebhookService);
+    botWebhook.mount(app);
+
     const port = parseInt(process.env.PORT || '3000', 10);
     await app.listen(port, '0.0.0.0');
+    await botWebhook.syncWebhook();
     logger.log(`Shein bot is running. HTTP health server on port ${port}.`);
   } catch (err) {
     const e = err as { code?: string; message?: string };
