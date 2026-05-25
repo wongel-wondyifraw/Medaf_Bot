@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { AppConfig } from '../config/configuration';
@@ -35,6 +35,9 @@ import { BotWebhookService } from './bot-webhook.service';
         const apiRoot = config.get('telegramApiRoot', { infer: true });
         const useWebhook = config.get('telegramUseWebhook', { infer: true });
         if (!token) throw new Error('BOT_TOKEN is missing from .env.');
+        new Logger('BotModule').log(
+          `Telegram startup mode: ${useWebhook ? 'webhook (polling disabled)' : 'polling'}`,
+        );
         return {
           token,
           launchOptions: useWebhook ? false : undefined,

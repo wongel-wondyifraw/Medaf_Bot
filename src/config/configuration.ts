@@ -47,7 +47,7 @@ function envNum(name: string, fallback: number | null): number | null {
 }
 
 function envBool(name: string, fallback = false): boolean {
-  const v = (process.env[name] || '').toLowerCase();
+  const v = (process.env[name] || '').trim().toLowerCase();
   if (v === 'true' || v === '1' || v === 'yes') return true;
   if (v === 'false' || v === '0' || v === 'no') return false;
   return fallback;
