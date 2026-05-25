@@ -14,6 +14,7 @@ import { ScraperModule } from '../scraper/scraper.module';
 import { SettingsModule } from '../settings/settings.module';
 import { BotLifecycleService } from './bot-lifecycle.service';
 import { BotUpdate } from './bot.update';
+import { BotWebhookService } from './bot-webhook.service';
 
 @Module({
   imports: [
@@ -32,9 +33,11 @@ import { BotUpdate } from './bot.update';
       useFactory: (config: ConfigService<AppConfig, true>) => {
         const token = config.get('botToken', { infer: true });
         const apiRoot = config.get('telegramApiRoot', { infer: true });
+        const useWebhook = config.get('telegramUseWebhook', { infer: true });
         if (!token) throw new Error('BOT_TOKEN is missing from .env.');
         return {
           token,
+          launchOptions: useWebhook ? false : undefined,
           options: {
             telegram: {
               apiRoot,
@@ -44,6 +47,6 @@ import { BotUpdate } from './bot.update';
       },
     }),
   ],
-  providers: [BotUpdate, FileLoggerService, BotLifecycleService],
+  providers: [BotUpdate, FileLoggerService, BotLifecycleService, BotWebhookService],
 })
 export class BotModule {}
