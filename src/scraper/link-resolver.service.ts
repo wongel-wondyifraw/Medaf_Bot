@@ -163,9 +163,6 @@ export class LinkResolverService {
     // All valid SHEIN links — desktop, mobile, share — go through the
     // manual flow. The scraping providers are still wired in the codebase
     // for future use, but the bot does not call them.
-    const cleaned = new URL(url);
-    cleaned.search = '';
-    cleaned.hash = '';
     const reason = isShare
       ? 'SHEIN share link'
       : host === 'm.shein.com'
@@ -174,7 +171,7 @@ export class LinkResolverService {
 
     return {
       kind: 'manual',
-      url: cleaned.toString(),
+      url,
       productId,
       reason,
     };
