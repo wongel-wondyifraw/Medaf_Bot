@@ -15,6 +15,14 @@ import { Category } from './category.entity';
 const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
   'T-shirt': ['t-shirt', 'tshirt', 'tee', 'tees'],
   Shirt: ['shirt', 'blouse', 'button up', 'button-up', 'button down'],
+  'Wedding Dress': [
+    'wedding dress',
+    'wedding gown',
+    'bridal dress',
+    'bridal gown',
+    'bride dress',
+    'wedding',
+  ],
   Dress: [
     'dress',
     'maxi dress',
@@ -126,6 +134,64 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
     'beauty',
   ],
 };
+
+/**
+ * Categories that only apply to women's products. When the product title
+ * contains a men-context word, every match against these categories is
+ * suppressed so titles like "Men's Shirt Dress Shirt" don't fall into
+ * "Short Dress" purely on substring length.
+ */
+const WOMEN_ONLY_CATEGORIES = new Set<string>([
+  'Dress',
+  'Short Dress',
+  'Body top',
+  'Wedding Dress',
+  'Girls closed Shoes',
+  'Girls flat Shoes',
+  'Girls Hill Shoes',
+]);
+
+/**
+ * Shoe-shape keywords used to detect that a men-context title is about
+ * footwear, so we can route it to "Men shoes" instead of dropping it
+ * because every Girls* category was skipped.
+ */
+const SHOE_KEYWORDS: string[] = [
+  'penny loafer',
+  'penny loafers',
+  'ballet flat',
+  'ballet flats',
+  'ankle boot',
+  'ankle boots',
+  'flip flop',
+  'flip flops',
+  'driving shoes',
+  'heeled sandal',
+  'heeled sandals',
+  'loafer',
+  'loafers',
+  'sneaker',
+  'sneakers',
+  'boot',
+  'boots',
+  'sandal',
+  'sandals',
+  'slides',
+  'mules',
+  'flat',
+  'flats',
+  'heel',
+  'heels',
+  'pump',
+  'pumps',
+  'stiletto',
+  'wedge',
+  'wedges',
+  'shoes',
+];
+
+const MEN_CONTEXT_REGEX = /\b(mens?|men's|man's|male|manfinity)\b/i;
+const WOMEN_CONTEXT_REGEX = /\b(womens?|women's|woman's|female|girls?|ladies|lady)\b/i;
 
 @Injectable()
 export class CategoriesService {
@@ -282,6 +348,12 @@ export class CategoriesService {
    *   2. Direct word matches against the category name itself.
    * The match with the longest matched token wins (more specific beats less
    * specific). Returns null when no match is found.
+   *
+   * Gender awareness: when the title contains a men-context word, matches
+   * against women-only categories (Dress, Short Dress, Body top, Wedding
+   * Dress, Girls* shoes) are suppressed. If a shoe-shape keyword matches
+   * under men-context, the result is forced to "Men shoes" so titles like
+   * "Men's Penny Loafers ... Driving Shoes" don't fall back to no-match.
    */
   async findBestMatchByText(text: string): Promise<Category | null> {
     if (!text) return null;
@@ -289,9 +361,26 @@ export class CategoriesService {
     const all = await this.findAll();
     const byName = new Map(all.map((c) => [c.name, c]));
 
+    const menContext = MEN_CONTEXT_REGEX.test(lower);
+
+    if (menContext) {
+      let bestShoe: { score: number } | null = null;
+      for (const kw of SHOE_KEYWORDS) {
+        if (this.wordMatches(lower, kw)) {
+          const score = kw.length;
+          if (!bestShoe || score > bestShoe.score) bestShoe = { score };
+        }
+      }
+      const menShoes = byName.get('Men shoes');
+      if (bestShoe && menShoes) {
+        return menShoes;
+      }
+    }
+
     let best: { category: Category; score: number } | null = null;
 
     for (const [catName, keywords] of Object.entries(KEYWORD_TO_CATEGORY)) {
+      if (menContext && WOMEN_ONLY_CATEGORIES.has(catName)) continue;
       const cat = byName.get(catName);
       if (!cat) continue;
       for (const kw of keywords) {
@@ -303,6 +392,7 @@ export class CategoriesService {
     }
 
     for (const cat of all) {
+      if (menContext && WOMEN_ONLY_CATEGORIES.has(cat.name)) continue;
       if (this.wordMatches(lower, cat.name)) {
         const score = cat.name.length;
         if (!best || score > best.score) best = { category: cat, score };

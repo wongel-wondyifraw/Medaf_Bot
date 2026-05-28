@@ -21,6 +21,7 @@ import { CosmeticsCategory1780100000000 } from '../migrations/1780100000000-Cosm
 import { CategoryDubaiFactor1780200000000 } from '../migrations/1780200000000-CategoryDubaiFactor';
 import { AedObservations1780300000000 } from '../migrations/1780300000000-AedObservations';
 import { RescaleDubaiFactor1780400000000 } from '../migrations/1780400000000-RescaleDubaiFactor';
+import { WeddingDressCategory1780500000000 } from '../migrations/1780500000000-WeddingDressCategory';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -51,6 +52,7 @@ export function buildTypeOrmOptions(opts: {
       CategoryDubaiFactor1780200000000,
       AedObservations1780300000000,
       RescaleDubaiFactor1780400000000,
+      WeddingDressCategory1780500000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],
