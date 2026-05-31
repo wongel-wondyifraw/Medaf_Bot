@@ -27,6 +27,7 @@ import {
 } from '../orders/order-draft-state.service';
 import { ResellersService } from '../resellers/resellers.service';
 import { LinkResolverService } from '../scraper/link-resolver.service';
+import { SharePreviewService } from '../scraper/share-preview.service';
 import {
   DEFAULT_CLOTHING_SIZES,
   extractFreeText,
@@ -50,6 +51,7 @@ export class BotUpdate {
     private readonly adminAuth: AdminAuthStateService,
     private readonly scraper: ScraperService,
     private readonly linkResolver: LinkResolverService,
+    private readonly sharePreview: SharePreviewService,
     private readonly calculator: CalculatorService,
     private readonly dubaiEstimator: DubaiEstimatorService,
     private readonly observations: ObservationsService,
@@ -250,9 +252,9 @@ export class BotUpdate {
   }
 
   /**
-   * Starts an order draft for any valid SHEIN link without calling scraping
-   * providers or fetching the product page. Product titles come from text the
-   * user pasted, Telegram's own link preview metadata, or the product URL slug.
+   * Starts an order draft for any valid SHEIN link without calling paid
+   * scraping providers. Titles come from pasted text, the URL slug, or a
+   * single plain HTTP fetch of share-link HTML (same source as Telegram previews).
    */
   private async startManualOrder(
     ctx: Context,
@@ -262,16 +264,23 @@ export class BotUpdate {
     productId: string | null,
   ): Promise<void> {
     await ctx.reply('Preparing product details, please wait...');
-    await this.simulateScrapeDelay();
 
     const freeText = extractFreeText(rawMessage);
-    const previewTitle = this.extractTelegramPreviewTitle(ctx);
     const slugTitle = extractSlugTitle(url);
+    const needsFetch = (!freeText || freeText.length < 4) && !slugTitle;
+
+    const fetched = needsFetch ? await this.sharePreview.tryFetch(url) : null;
+
+    if (!needsFetch) {
+      await this.simulateScrapeDelay();
+    }
+
+    const resolvedProductId = productId ?? fetched?.productId ?? null;
     const productTitle =
       (freeText && freeText.length >= 4 ? freeText : null) ??
-      previewTitle ??
+      fetched?.title ??
       slugTitle ??
-      (productId ? `SHEIN product ${productId}` : 'SHEIN product');
+      (resolvedProductId ? `SHEIN product ${resolvedProductId}` : 'SHEIN product');
 
     const sizes = isClothingTitle(productTitle) ? [...DEFAULT_CLOTHING_SIZES] : [];
 
@@ -287,8 +296,8 @@ export class BotUpdate {
       onSale: false,
       currency: 'USD',
       inStock: true,
-      image: null,
-      productId,
+      image: fetched?.image ?? null,
+      productId: resolvedProductId,
       domain: this.safeHostname(url),
       source: 'manual',
       sizes,
@@ -301,7 +310,7 @@ export class BotUpdate {
     // unitEtb/sellingEtb/totalEtb stay at 0 until the user enters the USD
     // price on the price step — the calculator will recompute them then.
     const draft = this.orderDraft.setDraft(userId, {
-      productId,
+      productId: resolvedProductId,
       link: url,
       productTitle,
       sizes,
@@ -333,23 +342,6 @@ export class BotUpdate {
     } catch {
       return 'shein.com';
     }
-  }
-
-  private extractTelegramPreviewTitle(ctx: Context): string | null {
-    const message = ctx.message as { web_page?: { title?: unknown } } | undefined;
-    const rawTitle = message?.web_page?.title;
-    if (typeof rawTitle !== 'string') return null;
-
-    const title = rawTitle
-      .replace(/&amp;/g, '&')
-      .replace(/&#39;|&apos;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (title.length < 4) return null;
-    if (/^shein\s*(?:\.com)?$/i.test(title)) return null;
-    return title;
   }
 
   /**
