@@ -44,7 +44,14 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
     't-shirt dress',
   ],
   Jeans: ['jeans', 'jean', 'denim pants'],
-  Trousers: ['pants', 'trousers', 'leggings', 'joggers', 'slacks', 'chinos'],
+  Trousers: [
+    'pants', 'trousers', 'leggings', 'joggers', 'slacks', 'chinos',
+    'sweatpants', 'sweat pants',
+    'trackpants', 'track pants', 'tracksuit pants',
+    'jogpants', 'jog pants', 'jogger pants',
+    'cargopants', 'cargo pants',
+    'palazzo', 'capri', 'culottes',
+  ],
   'Girls closed Shoes': ['sneakers', 'boots', 'ankle boot', 'shoes'],
   'Girls flat Shoes': [
     'flat',
@@ -86,7 +93,14 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
   'Body top': ['bodysuit', 'body suit', 'leotard'],
   'Jacket big': ['coat', 'puffer', 'parka', 'trench', 'overcoat', 'winter jacket'],
   'Jacket small': ['jacket', 'blazer', 'bomber', 'cardigan'],
-  'Phone Cover': ['phone case', 'phone cover', 'iphone case', 'samsung case', 'phone holder'],
+  'Phone Cover': [
+    'phone case', 'phone cover', 'iphone case', 'samsung case', 'phone holder',
+  ],
+  'Cell Phones & Accessories': [
+    'tablet case', 'tablet cover', 'tablet protective case', 'tablet sleeve',
+    'ipad case', 'ipad cover', 'ipad sleeve',
+    'laptop sleeve', 'laptop case',
+  ],
   'Bag(big)': ['backpack', 'tote', 'duffel', 'suitcase', 'luggage', 'travel bag'],
   'Bag(small)': ['clutch', 'crossbody', 'handbag', 'wallet', 'purse', 'shoulder bag', 'bag'],
   watch: ['watch', 'wristwatch', 'smartwatch'],

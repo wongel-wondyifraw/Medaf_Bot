@@ -16,6 +16,7 @@ export const DEFAULT_CLOTHING_SIZES = ['S', 'M', 'L', 'XL', 'XXL'];
 const CLOTHING_KEYWORDS = [
   'dress', 'cloth', 'shirt', 'blouse', 'tee', 't-shirt', 'tank', 'top',
   'pants', 'trousers', 'jeans', 'leggings', 'shorts',
+  'sweatpants', 'trackpants', 'jogpants', 'cargopants',
   'skirt',
   'jacket', 'coat', 'blazer', 'cardigan', 'sweater', 'hoodie', 'sweatshirt',
   'pullover', 'jumper',
