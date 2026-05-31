@@ -250,11 +250,9 @@ export class BotUpdate {
   }
 
   /**
-   * Starts an order draft for a SHEIN link where scraping is unreliable or
-   * impossible (mobile m.shein.com URLs and SHEIN share links). The product
-   * name is taken from the URL slug when available, otherwise from any free
-   * text the user pasted around the link. The user supplies the USD price
-   * themselves; shipping uses the best-matching category by product title.
+   * Starts an order draft for any valid SHEIN link without calling scraping
+   * providers or fetching the product page. Product titles come from text the
+   * user pasted, Telegram's own link preview metadata, or the product URL slug.
    */
   private async startManualOrder(
     ctx: Context,
@@ -263,16 +261,15 @@ export class BotUpdate {
     url: string,
     productId: string | null,
   ): Promise<void> {
-    // Keep the same "Fetching..." message the scraping path used to send so
-    // the user can't tell whether a real scrape happened. The small delay
-    // below mimics network latency so the response feels natural.
-    await ctx.reply('Fetching product details, please wait...');
+    await ctx.reply('Preparing product details, please wait...');
     await this.simulateScrapeDelay();
 
     const freeText = extractFreeText(rawMessage);
+    const previewTitle = this.extractTelegramPreviewTitle(ctx);
     const slugTitle = extractSlugTitle(url);
     const productTitle =
       (freeText && freeText.length >= 4 ? freeText : null) ??
+      previewTitle ??
       slugTitle ??
       (productId ? `SHEIN product ${productId}` : 'SHEIN product');
 
@@ -338,11 +335,26 @@ export class BotUpdate {
     }
   }
 
+  private extractTelegramPreviewTitle(ctx: Context): string | null {
+    const message = ctx.message as { web_page?: { title?: unknown } } | undefined;
+    const rawTitle = message?.web_page?.title;
+    if (typeof rawTitle !== 'string') return null;
+
+    const title = rawTitle
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (title.length < 4) return null;
+    if (/^shein\s*(?:\.com)?$/i.test(title)) return null;
+    return title;
+  }
+
   /**
-   * Brief delay before showing the draft so the user does not notice that
-   * the bot returned faster than a real scrape would. Tuned to feel close
-   * to ScraperAPI's typical successful response time without being
-   * annoying. Skipped during tests via NODE_ENV check.
+   * Brief delay before showing the draft so the response feels natural.
+   * Skipped during tests via NODE_ENV check.
    */
   private simulateScrapeDelay(): Promise<void> {
     if (process.env.NODE_ENV === 'test') return Promise.resolve();
