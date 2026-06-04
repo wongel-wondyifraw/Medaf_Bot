@@ -21,7 +21,6 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
     'bridal dress',
     'bridal gown',
     'bride dress',
-    'wedding',
   ],
   Dress: [
     'dress',
@@ -147,6 +146,15 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
     'conditioner',
     'beauty',
   ],
+};
+
+/**
+ * Weak keywords only win when no strong keyword matched anywhere.
+ * Use for occasion/style words (e.g. "wedding") that appear in many
+ * product types — shoe/bag/dress strong tokens always take priority.
+ */
+const WEAK_KEYWORDS_BY_CATEGORY: Record<string, readonly string[]> = {
+  'Wedding Dress': ['wedding', 'bridal', 'bride'],
 };
 
 /**
@@ -360,8 +368,9 @@ export class CategoriesService {
    *   1. A curated keyword → category map (handles things like
    *      "dress" → "Women Clothing"); and
    *   2. Direct word matches against the category name itself.
-   * The match with the longest matched token wins (more specific beats less
-   * specific). Returns null when no match is found.
+   * Strong keywords (product type: sandal, heel, dress, bag, …) win by
+   * longest match. Weak keywords (occasion: wedding, bridal, …) are used
+   * only when no strong keyword matched. Returns null when no match is found.
    *
    * Gender awareness: when the title contains a men-context word, matches
    * against women-only categories (Dress, Short Dress, Body top, Wedding
@@ -391,16 +400,50 @@ export class CategoriesService {
       }
     }
 
-    let best: { category: Category; score: number } | null = null;
+    let bestStrong: { category: Category; score: number } | null = null;
+    let bestWeak: { category: Category; score: number } | null = null;
+
+    const consider = (
+      cat: Category,
+      kw: string,
+      tier: 'strong' | 'weak',
+    ): void => {
+      const score = kw.length;
+      if (tier === 'strong') {
+        if (!bestStrong || score > bestStrong.score) {
+          bestStrong = { category: cat, score };
+        }
+      } else if (!bestWeak || score > bestWeak.score) {
+        bestWeak = { category: cat, score };
+      }
+    };
+
+    const weakByCategory = new Map(
+      Object.entries(WEAK_KEYWORDS_BY_CATEGORY).map(([name, kws]) => [
+        name,
+        new Set(kws.map((k) => k.toLowerCase())),
+      ]),
+    );
 
     for (const [catName, keywords] of Object.entries(KEYWORD_TO_CATEGORY)) {
       if (menContext && WOMEN_ONLY_CATEGORIES.has(catName)) continue;
       const cat = byName.get(catName);
       if (!cat) continue;
+      const weakSet = weakByCategory.get(catName);
+      for (const kw of keywords) {
+        if (!this.wordMatches(lower, kw)) continue;
+        const tier = weakSet?.has(kw.toLowerCase()) ? 'weak' : 'strong';
+        consider(cat, kw, tier);
+      }
+    }
+
+    for (const [catName, keywords] of Object.entries(WEAK_KEYWORDS_BY_CATEGORY)) {
+      if (menContext && WOMEN_ONLY_CATEGORIES.has(catName)) continue;
+      const cat = byName.get(catName);
+      if (!cat) continue;
       for (const kw of keywords) {
         if (this.wordMatches(lower, kw)) {
-          const score = kw.length;
-          if (!best || score > best.score) best = { category: cat, score };
+          consider(cat, kw, 'weak');
         }
       }
     }
@@ -408,12 +451,11 @@ export class CategoriesService {
     for (const cat of all) {
       if (menContext && WOMEN_ONLY_CATEGORIES.has(cat.name)) continue;
       if (this.wordMatches(lower, cat.name)) {
-        const score = cat.name.length;
-        if (!best || score > best.score) best = { category: cat, score };
+        consider(cat, cat.name, 'strong');
       }
     }
 
-    return best?.category ?? null;
+    return bestStrong?.category ?? bestWeak?.category ?? null;
   }
 
   private wordMatches(haystack: string, needle: string): boolean {
