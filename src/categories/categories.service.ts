@@ -215,6 +215,8 @@ const SHOE_KEYWORDS: string[] = [
 const MEN_CONTEXT_REGEX = /\b(mens?|men's|man's|male|manfinity)\b/i;
 const WOMEN_CONTEXT_REGEX = /\b(womens?|women's|woman's|female|girls?|ladies|lady)\b/i;
 
+type CategoryMatch = { category: Category; score: number };
+
 @Injectable()
 export class CategoriesService {
   private readonly logger = new Logger(CategoriesService.name);
@@ -400,22 +402,17 @@ export class CategoriesService {
       }
     }
 
-    let bestStrong: { category: Category; score: number } | null = null;
-    let bestWeak: { category: Category; score: number } | null = null;
+    let bestStrong: CategoryMatch | null = null;
+    let bestWeak: CategoryMatch | null = null;
 
-    const consider = (
+    const chooseBest = (
+      current: CategoryMatch | null,
       cat: Category,
       kw: string,
-      tier: 'strong' | 'weak',
-    ): void => {
+    ): CategoryMatch => {
       const score = kw.length;
-      if (tier === 'strong') {
-        if (!bestStrong || score > bestStrong.score) {
-          bestStrong = { category: cat, score };
-        }
-      } else if (!bestWeak || score > bestWeak.score) {
-        bestWeak = { category: cat, score };
-      }
+      if (!current || score > current.score) return { category: cat, score };
+      return current;
     };
 
     const weakByCategory = new Map(
@@ -433,7 +430,11 @@ export class CategoriesService {
       for (const kw of keywords) {
         if (!this.wordMatches(lower, kw)) continue;
         const tier = weakSet?.has(kw.toLowerCase()) ? 'weak' : 'strong';
-        consider(cat, kw, tier);
+        if (tier === 'strong') {
+          bestStrong = chooseBest(bestStrong, cat, kw);
+        } else {
+          bestWeak = chooseBest(bestWeak, cat, kw);
+        }
       }
     }
 
@@ -443,7 +444,7 @@ export class CategoriesService {
       if (!cat) continue;
       for (const kw of keywords) {
         if (this.wordMatches(lower, kw)) {
-          consider(cat, kw, 'weak');
+          bestWeak = chooseBest(bestWeak, cat, kw);
         }
       }
     }
@@ -451,7 +452,7 @@ export class CategoriesService {
     for (const cat of all) {
       if (menContext && WOMEN_ONLY_CATEGORIES.has(cat.name)) continue;
       if (this.wordMatches(lower, cat.name)) {
-        consider(cat, cat.name, 'strong');
+        bestStrong = chooseBest(bestStrong, cat, cat.name);
       }
     }
 
