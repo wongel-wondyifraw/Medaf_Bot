@@ -34,6 +34,12 @@ export interface AppConfig {
     gbpToEtb: number | null;
     deliveryCostEtb: number;
   };
+  gemini: {
+    apiKey: string;
+    model: string;
+    enabled: boolean;
+    timeoutMs: number;
+  };
 }
 
 function envStr(name: string, fallback = ''): string {
@@ -100,6 +106,12 @@ export default function configuration(): AppConfig {
       eurToEtb: envNum('EUR_TO_ETB', null),
       gbpToEtb: envNum('GBP_TO_ETB', null),
       deliveryCostEtb: envNum('DELIVERY_COST_ETB', 500) ?? 500,
+    },
+    gemini: {
+      apiKey: envStr('GEMINI_API_KEY'),
+      model: envStr('GEMINI_MODEL', 'gemini-2.5-flash'),
+      enabled: envBool('GEMINI_CATEGORY_ENABLED', true),
+      timeoutMs: envNum('GEMINI_TIMEOUT_MS', 6000) ?? 6000,
     },
   };
 }

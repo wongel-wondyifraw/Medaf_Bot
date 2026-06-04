@@ -139,7 +139,7 @@ export class CalculatorService {
       }
     }
 
-    const titleCategory = await this.categoriesService.findBestMatchByText(product.title);
+    const titleCategory = await this.categoriesService.findBestCategory(product.title);
     if (titleCategory) {
       const shipping = titleCategory.shippingCost ?? 0;
       const commission = titleCategory.commissionEtb ?? 0;

@@ -284,7 +284,7 @@ export class BotUpdate {
 
     const sizes = isClothingTitle(productTitle) ? [...DEFAULT_CLOTHING_SIZES] : [];
 
-    const category = await this.categories.findBestMatchByText(productTitle);
+    const category = await this.categories.findBestCategory(productTitle);
     const synthesized: ScrapedProduct = {
       title: productTitle,
       price: 0,

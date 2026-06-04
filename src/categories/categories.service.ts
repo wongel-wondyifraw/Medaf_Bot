@@ -5,6 +5,7 @@ import {
   defaultDubaiFactorForGroup,
   resolveBroadGroup,
 } from '../calculator/broad-group';
+import { CategoryAiService } from './category-ai.service';
 import { Category } from './category.entity';
 
 /**
@@ -158,6 +159,18 @@ const WEAK_KEYWORDS_BY_CATEGORY: Record<string, readonly string[]> = {
 };
 
 /**
+ * Strong-match precedence. When several strong categories match the same
+ * title, the one with the highest priority wins regardless of keyword
+ * length (ties fall back to longest matched keyword). This lets a more
+ * specific feature beat a more generic one, e.g. a "high heel sandal" is a
+ * heel first (Girls Hill Shoes) even though "sandals" is the longer token.
+ * Unlisted categories default to priority 0.
+ */
+const CATEGORY_PRIORITY: Record<string, number> = {
+  'Girls Hill Shoes': 2,
+};
+
+/**
  * Categories that only apply to women's products. When the product title
  * contains a men-context word, every match against these categories is
  * suppressed so titles like "Men's Shirt Dress Shirt" don't fall into
@@ -215,7 +228,7 @@ const SHOE_KEYWORDS: string[] = [
 const MEN_CONTEXT_REGEX = /\b(mens?|men's|man's|male|manfinity)\b/i;
 const WOMEN_CONTEXT_REGEX = /\b(womens?|women's|woman's|female|girls?|ladies|lady)\b/i;
 
-type CategoryMatch = { category: Category; score: number };
+type CategoryMatch = { category: Category; priority: number; score: number };
 
 @Injectable()
 export class CategoriesService {
@@ -224,6 +237,7 @@ export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private readonly repo: Repository<Category>,
+    private readonly categoryAi: CategoryAiService,
   ) {}
 
   findAll(): Promise<Category[]> {
@@ -380,6 +394,29 @@ export class CategoriesService {
    * under men-context, the result is forced to "Men shoes" so titles like
    * "Men's Penny Loafers ... Driving Shoes" don't fall back to no-match.
    */
+  /**
+   * Primary category resolver for a free-text product title. Tries the Gemini
+   * Flash classifier first (when configured) and falls back to the keyword
+   * matcher on any miss, so behaviour degrades gracefully without an API key
+   * or network. Use this from product/order flows; `findBestMatchByText`
+   * remains the pure keyword fallback.
+   */
+  async findBestCategory(text: string): Promise<Category | null> {
+    if (!text) return null;
+
+    if (this.categoryAi.isEnabled()) {
+      const all = await this.findAll();
+      const names = all.map((c) => c.name);
+      const aiName = await this.categoryAi.classify(text, names);
+      if (aiName) {
+        const match = all.find((c) => c.name === aiName);
+        if (match) return match;
+      }
+    }
+
+    return this.findBestMatchByText(text);
+  }
+
   async findBestMatchByText(text: string): Promise<Category | null> {
     if (!text) return null;
     const lower = text.toLowerCase();
@@ -410,8 +447,12 @@ export class CategoriesService {
       cat: Category,
       kw: string,
     ): CategoryMatch => {
+      const priority = CATEGORY_PRIORITY[cat.name] ?? 0;
       const score = kw.length;
-      if (!current || score > current.score) return { category: cat, score };
+      const candidate: CategoryMatch = { category: cat, priority, score };
+      if (!current) return candidate;
+      if (priority > current.priority) return candidate;
+      if (priority === current.priority && score > current.score) return candidate;
       return current;
     };
 
