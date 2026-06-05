@@ -122,7 +122,7 @@ export default function configuration(): AppConfig {
     groq: {
       apiKey: envStr('GROQ_API_KEY'),
       model: envStr('GROQ_MODEL', 'llama-3.1-8b-instant'),
-      enabled: envBool('GROQ_CATEGORY_ENABLED', true),
+      enabled: envBool('GROQ_CATEGORY_ENABLED', false),
       timeoutMs: envNum('GROQ_TIMEOUT_MS', 6000) ?? 6000,
     },
   };
