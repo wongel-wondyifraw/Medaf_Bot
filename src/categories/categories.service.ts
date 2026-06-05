@@ -6,6 +6,7 @@ import {
   resolveBroadGroup,
 } from '../calculator/broad-group';
 import { CategoryAiService } from './category-ai.service';
+import { CategoryGroqService } from './category-groq.service';
 import { Category } from './category.entity';
 
 /**
@@ -237,6 +238,7 @@ export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private readonly repo: Repository<Category>,
+    private readonly categoryGroq: CategoryGroqService,
     private readonly categoryAi: CategoryAiService,
   ) {}
 
@@ -379,6 +381,39 @@ export class CategoriesService {
   }
 
   /**
+   * Primary category resolver for a free-text product title. Classification
+   * order is Groq (primary) -> Gemini (fallback) -> keyword matcher, where
+   * each AI step is skipped when not configured and any miss/error falls
+   * through to the next step. Use this from product/order flows;
+   * `findBestMatchByText` remains the pure keyword fallback.
+   */
+  async findBestCategory(text: string): Promise<Category | null> {
+    if (!text) return null;
+
+    const groqEnabled = this.categoryGroq.isEnabled();
+    const geminiEnabled = this.categoryAi.isEnabled();
+
+    if (groqEnabled || geminiEnabled) {
+      const all = await this.findAll();
+      const names = all.map((c) => c.name);
+
+      if (groqEnabled) {
+        const groqName = await this.categoryGroq.classify(text, names);
+        const match = groqName && all.find((c) => c.name === groqName);
+        if (match) return match;
+      }
+
+      if (geminiEnabled) {
+        const aiName = await this.categoryAi.classify(text, names);
+        const match = aiName && all.find((c) => c.name === aiName);
+        if (match) return match;
+      }
+    }
+
+    return this.findBestMatchByText(text);
+  }
+
+  /**
    * Best-effort mapping from an arbitrary product title to a known category.
    * Walks both:
    *   1. A curated keyword → category map (handles things like
@@ -394,29 +429,6 @@ export class CategoriesService {
    * under men-context, the result is forced to "Men shoes" so titles like
    * "Men's Penny Loafers ... Driving Shoes" don't fall back to no-match.
    */
-  /**
-   * Primary category resolver for a free-text product title. Tries the Gemini
-   * Flash classifier first (when configured) and falls back to the keyword
-   * matcher on any miss, so behaviour degrades gracefully without an API key
-   * or network. Use this from product/order flows; `findBestMatchByText`
-   * remains the pure keyword fallback.
-   */
-  async findBestCategory(text: string): Promise<Category | null> {
-    if (!text) return null;
-
-    if (this.categoryAi.isEnabled()) {
-      const all = await this.findAll();
-      const names = all.map((c) => c.name);
-      const aiName = await this.categoryAi.classify(text, names);
-      if (aiName) {
-        const match = all.find((c) => c.name === aiName);
-        if (match) return match;
-      }
-    }
-
-    return this.findBestMatchByText(text);
-  }
-
   async findBestMatchByText(text: string): Promise<Category | null> {
     if (!text) return null;
     const lower = text.toLowerCase();

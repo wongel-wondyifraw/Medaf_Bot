@@ -40,6 +40,12 @@ export interface AppConfig {
     enabled: boolean;
     timeoutMs: number;
   };
+  groq: {
+    apiKey: string;
+    model: string;
+    enabled: boolean;
+    timeoutMs: number;
+  };
 }
 
 function envStr(name: string, fallback = ''): string {
@@ -112,6 +118,12 @@ export default function configuration(): AppConfig {
       model: envStr('GEMINI_MODEL', 'gemini-2.5-flash'),
       enabled: envBool('GEMINI_CATEGORY_ENABLED', true),
       timeoutMs: envNum('GEMINI_TIMEOUT_MS', 6000) ?? 6000,
+    },
+    groq: {
+      apiKey: envStr('GROQ_API_KEY'),
+      model: envStr('GROQ_MODEL', 'llama-3.1-8b-instant'),
+      enabled: envBool('GROQ_CATEGORY_ENABLED', true),
+      timeoutMs: envNum('GROQ_TIMEOUT_MS', 6000) ?? 6000,
     },
   };
 }
