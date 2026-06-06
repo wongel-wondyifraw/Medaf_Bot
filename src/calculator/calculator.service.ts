@@ -6,7 +6,11 @@ import { PriceConfidence } from '../observations/observations.service';
 import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 import { DubaiEstimatorService } from './dubai-estimator.service';
-import { applyLaw1Pricing, resolveDynamicMarginPercent } from './pricing-math';
+import {
+  applyLaw1Pricing,
+  resolveDynamicMarginPercent,
+  resolveEffectiveRescueFactor,
+} from './pricing-math';
 
 export { resolveDynamicMarginPercent } from './pricing-math';
 
@@ -88,18 +92,47 @@ export class CalculatorService {
       );
     }
 
-    const estimate = await this.dubaiEstimator.estimate({
+    const floorPerUnitEtb = input.ethUsd * rate;
+
+    let estimate = await this.dubaiEstimator.estimate({
       ethUsd: input.ethUsd,
       productId: input.productId,
       categoryName: input.categoryName,
     });
 
-    const dubaiCostEtb = estimate.dubaiUsd * rate;
-    const law1 = applyLaw1Pricing({
+    let triggers = [...estimate.triggers];
+
+    let dubaiCostEtb = estimate.dubaiUsd * rate;
+    let law1 = applyLaw1Pricing({
       dubaiCostEtb,
       deliveryEtb: input.deliveryEtb,
       quantity: input.quantity,
     });
+
+    if (law1.finalEtbPerUnit < floorPerUnitEtb) {
+      const cat = input.categoryName
+        ? await this.categoriesService.findByName(input.categoryName)
+        : null;
+      const highFactor =
+        cat?.dubaiFactorHigh != null && cat.dubaiFactorHigh > 0
+          ? cat.dubaiFactorHigh
+          : 1.0;
+      const effectiveFactor = resolveEffectiveRescueFactor(highFactor);
+
+      estimate = await this.dubaiEstimator.estimate({
+        ethUsd: input.ethUsd,
+        productId: input.productId,
+        categoryName: input.categoryName,
+        forceFactor: effectiveFactor,
+      });
+      dubaiCostEtb = estimate.dubaiUsd * rate;
+      law1 = applyLaw1Pricing({
+        dubaiCostEtb,
+        deliveryEtb: input.deliveryEtb,
+        quantity: input.quantity,
+      });
+      triggers.push('floor');
+    }
 
     const unitEtbPerUnit = Math.ceil(law1.finalEtbPerUnit);
 
@@ -118,7 +151,7 @@ export class CalculatorService {
       dubaiAed: estimate.dubaiAed,
       factorUsed: estimate.factorUsed,
       confidence: estimate.confidence,
-      triggers: estimate.triggers,
+      triggers,
     };
   }
 

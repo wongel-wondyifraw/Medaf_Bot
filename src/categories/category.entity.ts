@@ -43,4 +43,15 @@ export class Category {
     transformer: numericTransformer,
   })
   dubaiFactor!: number | null;
+
+  /** Floor-rescue factor when primary pricing falls below SHEIN USD × rate. */
+  @Column({
+    type: 'numeric',
+    name: 'dubai_factor_high',
+    nullable: true,
+    precision: 6,
+    scale: 4,
+    transformer: numericTransformer,
+  })
+  dubaiFactorHigh!: number | null;
 }

@@ -15,6 +15,7 @@ export type PendingAction =
   | 'add-category-fee'
   | 'add-category-commission'
   | 'edit-category-factor'
+  | 'edit-category-factor-high'
   | 'edit-rate-aed'
   | 'addprice-link'
   | 'addprice-eth-usd'

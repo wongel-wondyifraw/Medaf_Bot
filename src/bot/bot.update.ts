@@ -956,7 +956,7 @@ export class BotUpdate {
       return;
     }
 
-    const nameFieldMatch = suffix.match(/^(fee-name|comm-name|factor-name):(.+)$/);
+    const nameFieldMatch = suffix.match(/^(fee-name|comm-name|factor-name|factor-high-name):(.+)$/);
     if (nameFieldMatch) {
       const categoryName = this.decodeCategoryName(nameFieldMatch[2]);
       if (!categoryName) {
@@ -965,6 +965,10 @@ export class BotUpdate {
       }
       if (nameFieldMatch[1] === 'factor-name') {
         await this.handleCategoryEditFactorPromptByName(ctx, from.id, categoryName);
+        return;
+      }
+      if (nameFieldMatch[1] === 'factor-high-name') {
+        await this.handleCategoryEditFactorHighPromptByName(ctx, from.id, categoryName);
         return;
       }
       const field =
@@ -1258,6 +1262,9 @@ export class BotUpdate {
         break;
       case 'edit-category-factor':
         await this.handleEditCategoryFactor(ctx, userId, text);
+        break;
+      case 'edit-category-factor-high':
+        await this.handleEditCategoryFactorHigh(ctx, userId, text);
         break;
       case 'addprice-link':
         await this.handleAddPriceLink(ctx, userId, text);
@@ -2077,10 +2084,11 @@ export class BotUpdate {
       `Shipping fee: <b>${this.formatCategoryEtb(category.shippingCost)}</b>`,
       `Commission: <b>${this.formatCategoryEtb(category.commissionEtb)}</b>`,
       `Dubai factor: <b>${this.formatDubaiFactor(category.dubaiFactor)}</b>`,
+      `High Dubai factor: <b>${this.formatDubaiFactor(category.dubaiFactorHigh)}</b>`,
       '--------------------',
       `Delivery total: <b>${this.formatCategoryEtb(this.categoryDeliveryTotal(category))}</b>`,
       '',
-      '<i>Delivery total is added per item at checkout. Dubai factor is used for reverse-engineering Dubai cost from Ethiopia-view USD.</i>',
+      '<i>Delivery total is added per item at checkout. Dubai factors reverse-engineer Dubai cost from Ethiopia-view USD; the high factor is used when pricing would fall below SHEIN USD × rate.</i>',
     ].join('\n');
   }
 
@@ -2103,6 +2111,12 @@ export class BotUpdate {
         Markup.button.callback(
           '✏️ Edit Dubai factor',
           `admin:cat:factor-name:${token}`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          '✏️ Edit high Dubai factor',
+          `admin:cat:factor-high-name:${token}`,
         ),
       ],
       [
@@ -2318,6 +2332,37 @@ export class BotUpdate {
     return { kind: 'ok', value: parsed };
   }
 
+  private parseDubaiFactorHigh(
+    text: string,
+  ):
+    | { kind: 'ok'; value: number | null }
+    | { kind: 'cancel' }
+    | { kind: 'error'; message: string } {
+    const normalized = text.trim().toLowerCase();
+    if (normalized === 'cancel') return { kind: 'cancel' };
+    if (normalized === 'clear' || normalized === 'null' || normalized === '-') {
+      return { kind: 'ok', value: null };
+    }
+
+    const cleaned = text.replace(/,/g, '.').trim();
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) {
+      return {
+        kind: 'error',
+        message:
+          'Invalid factor. Enter a decimal between 0.01 and 3.00 (e.g. 1.10), ' +
+          '<code>clear</code> to reset, or <code>cancel</code> to abort.',
+      };
+    }
+    const parsed = parseFloat(cleaned);
+    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 3) {
+      return {
+        kind: 'error',
+        message: 'High factor must be between 0.01 and 3.00.',
+      };
+    }
+    return { kind: 'ok', value: parsed };
+  }
+
   private async handleCategoryEditFactorPromptByName(
     ctx: Context,
     userId: number,
@@ -2401,6 +2446,95 @@ export class BotUpdate {
     await ctx.reply(
       `✅ <b>${this.escapeHtml(updated.name)}</b> Dubai factor ` +
         `<b>${this.formatDubaiFactor(updated.dubaiFactor)}</b>.`,
+      { parse_mode: 'HTML' },
+    );
+    await this.showCategoryDetailByName(ctx, updated.name, 'reply');
+  }
+
+  private async handleCategoryEditFactorHighPromptByName(
+    ctx: Context,
+    userId: number,
+    categoryName: string,
+  ): Promise<void> {
+    const category = await this.categories.findByName(categoryName);
+    if (!category) {
+      await this.safeAnswer(ctx, 'Category not found.', true);
+      return;
+    }
+
+    this.adminAuth.setPending(userId, 'edit-category-factor-high');
+    this.categoryEditState.setPending(userId, category.name);
+    await this.safeAnswer(ctx, '', false);
+
+    const body =
+      `<b>✏️ ${this.escapeHtml(category.name)} — high Dubai factor</b>\n\n` +
+      `Current: <b>${this.formatDubaiFactor(category.dubaiFactorHigh)}</b>\n\n` +
+      'Used when pricing would fall below SHEIN USD × rate.\n' +
+      'Send the new factor (example: <code>1.10</code>, may exceed 1.00).\n' +
+      'Send <code>clear</code> to remove, or <code>cancel</code> to return.';
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('← Back', this.categoryNameAction(category))],
+    ]);
+
+    try {
+      await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryEditFactorHigh', err, { categoryName });
+    }
+  }
+
+  private async handleEditCategoryFactorHigh(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const categoryKey = this.categoryEditState.getPending(userId);
+    if (!categoryKey) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Edit session expired. Open the category list again.');
+      return;
+    }
+
+    const parsed = this.parseDubaiFactorHigh(text);
+    if (parsed.kind === 'cancel') {
+      this.adminAuth.clearPending(userId);
+      this.categoryEditState.clearPending(userId);
+      if (typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)) {
+        await this.showCategoryDetailByName(ctx, categoryKey, 'reply');
+      } else {
+        await this.showCategoryDetail(ctx, categoryKey, 'reply');
+      }
+      return;
+    }
+    if (parsed.kind === 'error') {
+      await ctx.reply(parsed.message, { parse_mode: 'HTML' });
+      return;
+    }
+
+    const updated =
+      typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
+        ? await this.categories.setDubaiFactorHighByName(categoryKey, parsed.value)
+        : await this.categories.setDubaiFactorHigh(categoryKey, parsed.value);
+    this.adminAuth.clearPending(userId);
+    this.categoryEditState.clearPending(userId);
+
+    if (!updated) {
+      await ctx.reply('Category not found.');
+      return;
+    }
+
+    await ctx.reply(
+      `✅ <b>${this.escapeHtml(updated.name)}</b> high Dubai factor ` +
+        `<b>${this.formatDubaiFactor(updated.dubaiFactorHigh)}</b>.`,
       { parse_mode: 'HTML' },
     );
     await this.showCategoryDetailByName(ctx, updated.name, 'reply');

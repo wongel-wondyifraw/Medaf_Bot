@@ -23,6 +23,7 @@ import { AedObservations1780300000000 } from '../migrations/1780300000000-AedObs
 import { RescaleDubaiFactor1780400000000 } from '../migrations/1780400000000-RescaleDubaiFactor';
 import { WeddingDressCategory1780500000000 } from '../migrations/1780500000000-WeddingDressCategory';
 import { TshirtDubaiFactor1780600000000 } from '../migrations/1780600000000-TshirtDubaiFactor';
+import { CategoryDubaiFactorHigh1780700000000 } from '../migrations/1780700000000-CategoryDubaiFactorHigh';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -55,6 +56,7 @@ export function buildTypeOrmOptions(opts: {
       RescaleDubaiFactor1780400000000,
       WeddingDressCategory1780500000000,
       TshirtDubaiFactor1780600000000,
+      CategoryDubaiFactorHigh1780700000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

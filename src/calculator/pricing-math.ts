@@ -1,3 +1,26 @@
+/** 15% above direct SHEIN cost on the product-cost portion (= factor 1.15). */
+export const RESCUE_CEILING_FACTOR = 1.15;
+
+/** Minimum rescue factor — product cost equals ethUsd × rate. */
+export const RESCUE_FLOOR_FACTOR = 1.0;
+
+/**
+ * Resolves the effective Dubai factor for floor-rescue pricing.
+ * When highFactor exceeds the ceiling, averages ceiling and high for a middle ground.
+ */
+export function resolveEffectiveRescueFactor(
+  highFactor: number,
+  ceilingFactor = RESCUE_CEILING_FACTOR,
+  floorFactor = RESCUE_FLOOR_FACTOR,
+): number {
+  if (!Number.isFinite(highFactor) || highFactor <= 0) {
+    highFactor = floorFactor;
+  }
+  const capped =
+    highFactor <= ceilingFactor ? highFactor : (ceilingFactor + highFactor) / 2;
+  return Math.max(capped, floorFactor);
+}
+
 /**
  * Dynamic profit margin tiers from per-unit Dubai cost in ETB (delivery excluded).
  *   • cost < 3,000 ETB         → 30%

@@ -18,6 +18,8 @@ export interface DubaiEstimateInput {
   ethUsd: number;
   productId: string | null;
   categoryName: string | null;
+  /** When set, skip history/criteria and use this factor directly. */
+  forceFactor?: number;
 }
 
 export interface DubaiEstimateResult {
@@ -44,6 +46,25 @@ export class DubaiEstimatorService {
   ) {}
 
   async estimate(input: DubaiEstimateInput): Promise<DubaiEstimateResult> {
+    const usdToAed = await this.resolveUsdToAed();
+
+    if (
+      input.forceFactor != null &&
+      Number.isFinite(input.forceFactor) &&
+      input.forceFactor > 0
+    ) {
+      const factorUsed = input.forceFactor;
+      const dubaiUsd = input.ethUsd * factorUsed;
+      return {
+        dubaiUsd,
+        dubaiAed: dubaiUsd * usdToAed,
+        factorUsed,
+        confidence: 'estimate',
+        triggers: ['forced'],
+        history: null,
+      };
+    }
+
     const broadGroup = resolveBroadGroup(input.categoryName);
     const categoryFactor = await this.resolveCategoryFactor(
       input.categoryName,
@@ -69,7 +90,6 @@ export class DubaiEstimatorService {
       broadGroup,
     );
 
-    const usdToAed = await this.resolveUsdToAed();
     const dubaiUsd = input.ethUsd * factorUsed;
     const dubaiAed = dubaiUsd * usdToAed;
 

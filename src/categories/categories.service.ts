@@ -380,6 +380,34 @@ export class CategoriesService {
     return existing;
   }
 
+  async setDubaiFactorHigh(
+    id: number | string,
+    factor: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    existing.dubaiFactorHigh = factor;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category #${id} (${existing.name}) dubai_factor_high set to ${factor}`,
+    );
+    return existing;
+  }
+
+  async setDubaiFactorHighByName(
+    name: string,
+    factor: number | null,
+  ): Promise<Category | null> {
+    const existing = await this.findByName(name);
+    if (!existing) return null;
+    existing.dubaiFactorHigh = factor;
+    await this.repo.save(existing);
+    this.logger.log(
+      `Category "${name}" (#${existing.id}) dubai_factor_high set to ${factor}`,
+    );
+    return existing;
+  }
+
   /**
    * Primary category resolver for a free-text product title. Classification
    * order is Groq (primary) -> Gemini (fallback) -> keyword matcher, where
