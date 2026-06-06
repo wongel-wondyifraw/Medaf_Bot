@@ -19,6 +19,7 @@ export type PendingAction =
   | 'edit-category-factor-avg'
   | 'edit-category-factor-high'
   | 'edit-rate-aed'
+  | 'edit-ceiling'
   | 'addprice-link'
   | 'addprice-eth-usd'
   | 'addprice-aed';

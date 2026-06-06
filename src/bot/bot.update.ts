@@ -705,6 +705,21 @@ export class BotUpdate {
     await ctx.reply('Enter new USD → AED rate, e.g. 3.67:');
   }
 
+  @Action('admin:edit:ceiling')
+  async onEditCeiling(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-ceiling');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(
+      'Enter the price ceiling multiplier for the HIGH factor step.\n\n' +
+        'Examples: <code>1.20</code> = allow up to 20% above anchor, ' +
+        '<code>1.30</code> = up to 30%.',
+      { parse_mode: 'HTML' },
+    );
+  }
+
   @Command('addprice')
   async onAddPriceCommand(@Ctx() ctx: Context) {
     const from = ctx.from;
@@ -1265,6 +1280,20 @@ export class BotUpdate {
           label: 'USD → AED rate',
           suffix: '',
         });
+        break;
+      case 'edit-ceiling':
+        await this.handleSettingValue(
+          ctx,
+          userId,
+          SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
+          text,
+          {
+            min: 1,
+            max: 3,
+            label: 'Price ceiling multiplier',
+            suffix: '×',
+          },
+        );
         break;
       case 'edit-category-factor':
         await this.handleEditCategoryFactorLow(ctx, userId, text);
@@ -2004,6 +2033,11 @@ export class BotUpdate {
       pricing.deliveryCostEtb,
     );
     const usd = await this.settings.getNumber(SETTING_KEYS.USD_TO_ETB, pricing.usdToEtb ?? 0);
+    const ceiling = await this.settings.getNumber(
+      SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
+      pricing.ceilingMultiplier,
+    );
+    const ceilingPct = Math.round((ceiling - 1) * 100);
     const adminList = await this.admins.findAll();
 
     const lines = [
@@ -2019,6 +2053,7 @@ export class BotUpdate {
       '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       `• USD → AED: <b>${await this.formatUsdToAedSetting()}</b>`,
+      `• Price ceiling: <b>${ceiling.toFixed(2)}×</b> (HIGH factor allowed up to <b>${ceilingPct}%</b> above anchor)`,
       '',
       `<b>Admins</b> (${adminList.length})`,
     ];
@@ -2044,6 +2079,7 @@ export class BotUpdate {
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
       [Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed')],
+      [Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
     ];
