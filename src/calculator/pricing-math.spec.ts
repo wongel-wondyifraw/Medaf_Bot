@@ -6,17 +6,17 @@ import {
 } from './pricing-math';
 
 describe('resolveDynamicMarginPercent', () => {
-  it('returns 30% below 3,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(2999), 30);
+  it('returns 30% below 5,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(4999), 30);
   });
 
-  it('returns 20% between 3,000 and 10,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(3000), 20);
-    assert.equal(resolveDynamicMarginPercent(10000), 20);
+  it('returns 20% between 5,000 and 15,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(5000), 20);
+    assert.equal(resolveDynamicMarginPercent(15000), 20);
   });
 
-  it('returns 15% above 10,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(10001), 15);
+  it('returns 15% above 15,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(15001), 15);
   });
 });
 
@@ -84,6 +84,31 @@ describe('runThreeFactorDecision', () => {
     const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
     assert.equal(result.floored, false);
     assert.ok(result.unitEtbPerUnit > baseEtbRef);
+  });
+
+  it('applies the final multiplier uplift to the chosen price', () => {
+    const baseline = runThreeFactorDecision({
+      baseAed,
+      baseEtbRef,
+      deliveryEtb,
+      etbToAed,
+      quantity: 1,
+      factors: menShoesFactors,
+      ceilingMultiplier: 1.2,
+    });
+    const uplifted = runThreeFactorDecision({
+      baseAed,
+      baseEtbRef,
+      deliveryEtb,
+      etbToAed,
+      quantity: 1,
+      factors: menShoesFactors,
+      ceilingMultiplier: 1.2,
+      finalMultiplier: 1.1,
+    });
+    assert.equal(baseline.tier, uplifted.tier);
+    assert.equal(uplifted.unitEtbPerUnit, Math.ceil(baseline.unitEtbPerUnit * 1.1));
+    assert.ok(uplifted.profitEtb > baseline.profitEtb);
   });
 
   it('matches worked example shape for $20 Men shoes', () => {

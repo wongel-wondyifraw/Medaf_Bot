@@ -34,6 +34,7 @@ export interface AppConfig {
     gbpToEtb: number | null;
     deliveryCostEtb: number;
     ceilingMultiplier: number;
+    finalMultiplier: number;
     defaultFactorLow: number;
     defaultFactorAvg: number;
     defaultFactorHigh: number;
@@ -123,6 +124,7 @@ export default function configuration(): AppConfig {
       gbpToEtb: envNum('GBP_TO_ETB', null),
       deliveryCostEtb: envNum('DELIVERY_COST_ETB', 500) ?? 500,
       ceilingMultiplier: envNum('PRICING_CEILING_MULTIPLIER', 1.2) ?? 1.2,
+      finalMultiplier: envNum('PRICING_FINAL_MULTIPLIER', 1.1) ?? 1.1,
       defaultFactorLow: envNum('PRICING_DEFAULT_FACTOR_LOW', 0.4) ?? 0.4,
       defaultFactorAvg: envNum('PRICING_DEFAULT_FACTOR_AVG', 0.72) ?? 0.72,
       defaultFactorHigh: envNum('PRICING_DEFAULT_FACTOR_HIGH', 1.15) ?? 1.15,

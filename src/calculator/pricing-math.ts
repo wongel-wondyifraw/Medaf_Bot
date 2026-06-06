@@ -1,13 +1,16 @@
 /**
  * Dynamic profit margin tiers from per-unit Dubai cost in ETB (delivery excluded).
- *   • cost < 3,000 ETB         → 30%
- *   • 3,000 ≤ cost ≤ 10,000   → 20%
- *   • cost > 10,000 ETB        → 15%
+ *   • cost < 5,000 ETB          → 30%
+ *   • 5,000 ≤ cost ≤ 15,000    → 20%
+ *   • cost > 15,000 ETB         → 15%
+ *
+ * Thresholds raised from 3,000/10,000 so that core mid-priced orders keep the
+ * 30% tier instead of silently dropping to 20% (especially at higher FX rates).
  */
 export function resolveDynamicMarginPercent(dubaiCostEtb: number): number {
   if (!Number.isFinite(dubaiCostEtb) || dubaiCostEtb <= 0) return 30;
-  if (dubaiCostEtb < 3000) return 30;
-  if (dubaiCostEtb <= 10000) return 20;
+  if (dubaiCostEtb < 5000) return 30;
+  if (dubaiCostEtb <= 15000) return 20;
   return 15;
 }
 
@@ -29,6 +32,12 @@ export interface ThreeFactorDecisionInput {
   quantity: number;
   factors: ThreeFactors;
   ceilingMultiplier: number;
+  /**
+   * Uniform final uplift applied to the chosen per-unit price (after tier
+   * selection, before the floor clamp). Defaults to 1 (no change). Lets admins
+   * calibrate the whole price curve without touching factors/margins.
+   */
+  finalMultiplier?: number;
 }
 
 export interface StepPricingSnapshot {
@@ -99,18 +108,30 @@ function computeStep(input: InternalStepInput): StepPricingSnapshot {
 }
 
 /**
- * Hard floor guarantee: a finished order must never cost the customer less
- * than the bare USD × rate anchor (baseEtbRef). When a weak factor produces a
- * unit price below that anchor, we raise the unit price to the floor and
- * re-derive sell/profit so the breakdown stays internally consistent.
+ * Finalize a chosen tier:
+ *   1) apply the uniform final multiplier (calibration uplift),
+ *   2) enforce the hard floor (never below the USD × rate anchor),
+ * then re-derive sell/profit/total so the breakdown stays consistent.
  */
-function applyFloorClamp(
+function finalizeDecision(
   snapshot: StepPricingSnapshot,
   tier: FactorTier,
   reason: FactorReason,
   input: ThreeFactorDecisionInput,
 ): ThreeFactorDecisionResult {
   const floorEtb = Math.max(0, input.baseEtbRef);
+  const mult =
+    input.finalMultiplier && input.finalMultiplier > 0
+      ? input.finalMultiplier
+      : 1;
+
+  let unitEtbPerUnit = Math.ceil(snapshot.unitEtbPerUnit * mult);
+  let floored = false;
+  if (unitEtbPerUnit < floorEtb) {
+    unitEtbPerUnit = Math.ceil(floorEtb);
+    floored = true;
+  }
+
   const base = {
     tier,
     reason,
@@ -119,11 +140,11 @@ function applyFloorClamp(
     deliveryEtb: input.deliveryEtb,
   };
 
-  if (snapshot.unitEtbPerUnit >= floorEtb) {
-    return { ...base, ...snapshot, floored: false };
+  // Nothing changed the price → keep the exact (unrounded) margin breakdown.
+  if (unitEtbPerUnit === snapshot.unitEtbPerUnit) {
+    return { ...base, ...snapshot, floored };
   }
 
-  const unitEtbPerUnit = Math.ceil(floorEtb);
   const sellEtb = unitEtbPerUnit - input.deliveryEtb;
   const profitEtb = sellEtb - snapshot.dubaiCostEtb;
   const sellAed = sellEtb * input.etbToAed;
@@ -138,7 +159,7 @@ function applyFloorClamp(
     profitAed,
     unitEtbPerUnit,
     totalEtb: Math.ceil(unitEtbPerUnit * input.quantity),
-    floored: true,
+    floored,
   };
 }
 
@@ -148,8 +169,9 @@ function applyFloorClamp(
  * 2) HIGH — use if totalAed <= baseAed × ceilingMultiplier
  * 3) AVG — fallback
  *
- * A final hard floor clamp guarantees the unit price never drops below the
- * USD × rate anchor, whichever tier wins.
+ * The chosen tier is then finalized: a uniform final multiplier (calibration
+ * uplift) is applied, and a hard floor clamp guarantees the unit price never
+ * drops below the USD × rate anchor, whichever tier wins.
  *
  * Law 1: margin on dubai cost only; delivery added after; qty last.
  */
@@ -168,17 +190,17 @@ export function runThreeFactorDecision(
 
   const low = computeStep({ ...stepBase, factor: input.factors.low });
   if (low.totalAedPerUnit >= input.baseAed) {
-    return applyFloorClamp(low, 'low', 'viable', input);
+    return finalizeDecision(low, 'low', 'viable', input);
   }
 
   const high = computeStep({ ...stepBase, factor: input.factors.high });
   const ceilingAed = input.baseAed * input.ceilingMultiplier;
   if (high.totalAedPerUnit <= ceilingAed) {
-    return applyFloorClamp(high, 'high', 'within_ceiling', input);
+    return finalizeDecision(high, 'high', 'within_ceiling', input);
   }
 
   const avg = computeStep({ ...stepBase, factor: input.factors.avg });
-  return applyFloorClamp(avg, 'avg', 'fallback', input);
+  return finalizeDecision(avg, 'avg', 'fallback', input);
 }
 
 export interface Law1PricingInput {

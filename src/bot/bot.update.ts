@@ -720,6 +720,21 @@ export class BotUpdate {
     );
   }
 
+  @Action('admin:edit:final-mult')
+  async onEditFinalMult(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-final-mult');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(
+      'Enter the final price uplift multiplier applied to every price.\n\n' +
+        'Examples: <code>1.00</code> = no change, <code>1.10</code> = +10%, ' +
+        '<code>1.15</code> = +15%.',
+      { parse_mode: 'HTML' },
+    );
+  }
+
   @Command('addprice')
   async onAddPriceCommand(@Ctx() ctx: Context) {
     const from = ctx.from;
@@ -1291,6 +1306,20 @@ export class BotUpdate {
             min: 1,
             max: 3,
             label: 'Price ceiling multiplier',
+            suffix: '×',
+          },
+        );
+        break;
+      case 'edit-final-mult':
+        await this.handleSettingValue(
+          ctx,
+          userId,
+          SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
+          text,
+          {
+            min: 1,
+            max: 3,
+            label: 'Final price uplift',
             suffix: '×',
           },
         );
@@ -2038,6 +2067,11 @@ export class BotUpdate {
       pricing.ceilingMultiplier,
     );
     const ceilingPct = Math.round((ceiling - 1) * 100);
+    const finalMult = await this.settings.getNumber(
+      SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
+      pricing.finalMultiplier,
+    );
+    const finalPct = Math.round((finalMult - 1) * 100);
     const adminList = await this.admins.findAll();
 
     const lines = [
@@ -2054,6 +2088,7 @@ export class BotUpdate {
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       `• USD → AED: <b>${await this.formatUsdToAedSetting()}</b>`,
       `• Price ceiling: <b>${ceiling.toFixed(2)}×</b> (HIGH factor allowed up to <b>${ceilingPct}%</b> above anchor)`,
+      `• Final price uplift: <b>${finalMult.toFixed(2)}×</b> (${finalPct >= 0 ? '+' : ''}${finalPct}% on every price)`,
       '',
       `<b>Admins</b> (${adminList.length})`,
     ];
@@ -2079,7 +2114,10 @@ export class BotUpdate {
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
       [Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed')],
-      [Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling')],
+      [
+        Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling'),
+        Markup.button.callback('✏️ Final uplift ×', 'admin:edit:final-mult'),
+      ],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
     ];

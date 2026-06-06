@@ -106,6 +106,7 @@ export class CalculatorService {
     const usdToAed = await this.resolveUsdToAed();
     const etbToAed = usdToEtb > 0 ? usdToAed / usdToEtb : 0;
     const ceilingMultiplier = await this.resolveCeilingMultiplier();
+    const finalMultiplier = await this.resolveFinalMultiplier();
 
     const baseEtbRef = input.ethUsd * usdToEtb;
     const baseAed = input.ethUsd * usdToAed;
@@ -127,6 +128,7 @@ export class CalculatorService {
       quantity: input.quantity,
       factors,
       ceilingMultiplier,
+      finalMultiplier,
     });
 
     const dubaiUsd = input.ethUsd * decision.factorUsed;
@@ -247,6 +249,15 @@ export class CalculatorService {
       0,
     );
     return db > 0 ? db : pricing.ceilingMultiplier;
+  }
+
+  async resolveFinalMultiplier(): Promise<number> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const db = await this.settings.getNumber(
+      SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
+      0,
+    );
+    return db > 0 ? db : pricing.finalMultiplier;
   }
 
   /**
