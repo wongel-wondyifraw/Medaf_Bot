@@ -2,14 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CategoriesService } from '../categories/categories.service';
 import { AppConfig } from '../config/configuration';
-import { PriceConfidence } from '../observations/observations.service';
+import {
+  ObservationsService,
+  PriceConfidence,
+} from '../observations/observations.service';
 import { ScrapedProduct } from '../scraper/types';
 import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
-import { DubaiEstimatorService } from './dubai-estimator.service';
 import {
-  applyLaw1Pricing,
+  FactorReason,
+  FactorTier,
   resolveDynamicMarginPercent,
-  resolveEffectiveRescueFactor,
+  runThreeFactorDecision,
 } from './pricing-math';
 
 export { resolveDynamicMarginPercent } from './pricing-math';
@@ -24,6 +27,7 @@ export interface OrderTotal {
   deliveryEtb: number;
   marginPercent: number;
   rateUsed: number;
+  usdToAed: number;
   fromCurrency: string;
   matchedCategory: string | null;
   scrapedUnitUsd: number | null;
@@ -31,6 +35,13 @@ export interface OrderTotal {
   dubaiUsd: number;
   dubaiAed: number;
   factorUsed: number;
+  factorTier: FactorTier;
+  factorReason: FactorReason;
+  baseEtbRef: number;
+  baseAed: number;
+  dubaiCostEtb: number;
+  sellEtb: number;
+  profitEtb: number;
   confidence: PriceConfidence;
   triggers: string[];
 }
@@ -70,7 +81,7 @@ export class CalculatorService {
     private readonly config: ConfigService<AppConfig, true>,
     private readonly settings: SettingsService,
     private readonly categoriesService: CategoriesService,
-    private readonly dubaiEstimator: DubaiEstimatorService,
+    private readonly observations: ObservationsService,
   ) {}
 
   async resolveDelivery(
@@ -85,74 +96,104 @@ export class CalculatorService {
   }
 
   async priceFromEthUsd(input: PriceFromEthUsdInput): Promise<OrderTotal> {
-    const rate = await this.resolveUsdToEtb();
-    if (!rate) {
+    const usdToEtb = await this.resolveUsdToEtb();
+    if (!usdToEtb) {
       throw new Error(
         'No ETB exchange rate configured. Set USD_TO_ETB from the admin panel or in .env.',
       );
     }
 
-    const floorPerUnitEtb = input.ethUsd * rate;
+    const usdToAed = await this.resolveUsdToAed();
+    const etbToAed = usdToEtb > 0 ? usdToAed / usdToEtb : 0;
+    const ceilingMultiplier = await this.resolveCeilingMultiplier();
 
-    let estimate = await this.dubaiEstimator.estimate({
-      ethUsd: input.ethUsd,
-      productId: input.productId,
-      categoryName: input.categoryName,
-    });
+    const baseEtbRef = input.ethUsd * usdToEtb;
+    const baseAed = input.ethUsd * usdToAed;
 
-    let triggers = [...estimate.triggers];
+    const factors = await this.categoriesService.resolveThreeFactors(
+      input.categoryName,
+    );
+    factors.avg = await this.blendObservedAvgFactor(
+      input.productId,
+      input.categoryName,
+      factors.avg,
+    );
 
-    let dubaiCostEtb = estimate.dubaiUsd * rate;
-    let law1 = applyLaw1Pricing({
-      dubaiCostEtb,
+    const decision = runThreeFactorDecision({
+      baseAed,
+      baseEtbRef,
       deliveryEtb: input.deliveryEtb,
+      etbToAed,
       quantity: input.quantity,
+      factors,
+      ceilingMultiplier,
     });
 
-    if (law1.finalEtbPerUnit < floorPerUnitEtb) {
-      const cat = input.categoryName
-        ? await this.categoriesService.findByName(input.categoryName)
-        : null;
-      const highFactor =
-        cat?.dubaiFactorHigh != null && cat.dubaiFactorHigh > 0
-          ? cat.dubaiFactorHigh
-          : 1.0;
-      const effectiveFactor = resolveEffectiveRescueFactor(highFactor);
+    const dubaiUsd = input.ethUsd * decision.factorUsed;
+    const triggers = [`tier:${decision.tier}`, `reason:${decision.reason}`];
 
-      estimate = await this.dubaiEstimator.estimate({
-        ethUsd: input.ethUsd,
-        productId: input.productId,
-        categoryName: input.categoryName,
-        forceFactor: effectiveFactor,
-      });
-      dubaiCostEtb = estimate.dubaiUsd * rate;
-      law1 = applyLaw1Pricing({
-        dubaiCostEtb,
-        deliveryEtb: input.deliveryEtb,
-        quantity: input.quantity,
-      });
-      triggers.push('floor');
-    }
-
-    const unitEtbPerUnit = Math.ceil(law1.finalEtbPerUnit);
+    this.logger.log(
+      `Priced "${input.categoryName ?? 'unknown'}" $${input.ethUsd} → ` +
+        `${decision.tier} (${decision.factorUsed}) = ${decision.totalEtb} ETB`,
+    );
 
     return {
-      totalEtb: law1.totalEtb,
-      sellingEtb: law1.totalEtb,
-      unitEtbPerUnit,
+      totalEtb: decision.totalEtb,
+      sellingEtb: decision.totalEtb,
+      unitEtbPerUnit: decision.unitEtbPerUnit,
       deliveryEtb: input.deliveryEtb,
-      marginPercent: law1.marginPercent,
-      rateUsed: rate,
+      marginPercent: decision.marginPercent,
+      rateUsed: usdToEtb,
+      usdToAed,
       fromCurrency: 'USD',
       matchedCategory: input.categoryName,
       scrapedUnitUsd: null,
       effectiveUnitUsd: input.ethUsd,
-      dubaiUsd: estimate.dubaiUsd,
-      dubaiAed: estimate.dubaiAed,
-      factorUsed: estimate.factorUsed,
-      confidence: estimate.confidence,
+      dubaiUsd,
+      dubaiAed: decision.dubaiCostAed,
+      factorUsed: decision.factorUsed,
+      factorTier: decision.tier,
+      factorReason: decision.reason,
+      baseEtbRef: decision.baseEtbRef,
+      baseAed: decision.baseAed,
+      dubaiCostEtb: decision.dubaiCostEtb,
+      sellEtb: decision.sellEtb,
+      profitEtb: decision.profitEtb,
+      confidence: decision.tier === 'avg' ? 'medium' : 'estimate',
       triggers,
     };
+  }
+
+  /**
+   * Blends verified /addprice observation averages into the category avg factor.
+   */
+  private async blendObservedAvgFactor(
+    productId: string | null,
+    categoryName: string | null,
+    dbAvg: number,
+  ): Promise<number> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const blend = pricing.obsBlend;
+    if (blend <= 0) return dbAvg;
+
+    let observed: number | null = null;
+
+    if (productId) {
+      const count = await this.observations.countByProduct(productId);
+      if (count >= 5) {
+        observed = await this.observations.avgFactorByProduct(productId);
+      }
+    }
+
+    if (observed == null && categoryName) {
+      const count = await this.observations.countByCategory(categoryName);
+      if (count >= 10) {
+        observed = await this.observations.avgFactorByCategory(categoryName);
+      }
+    }
+
+    if (observed == null || observed <= 0) return dbAvg;
+    return dbAvg * (1 - blend) + observed * blend;
   }
 
   private async resolveCategoryShipping(
@@ -191,10 +232,25 @@ export class CalculatorService {
     return usdToEtb && usdToEtb > 0 ? usdToEtb : null;
   }
 
+  async resolveUsdToAed(): Promise<number> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const db = await this.settings.getNumber(SETTING_KEYS.USD_TO_AED, 0);
+    return db > 0 ? db : pricing.usdToAed ?? 3.67;
+  }
+
+  async resolveCeilingMultiplier(): Promise<number> {
+    const pricing = this.config.get('pricing', { infer: true });
+    const db = await this.settings.getNumber(
+      SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
+      0,
+    );
+    return db > 0 ? db : pricing.ceilingMultiplier;
+  }
+
   /**
    * Legacy entry point used at draft creation (delivery snapshot) and when
    * scraping provides a USD price. When `overrideUnitUsd` is set, runs the
-   * full Dubai reverse-engineering pipeline.
+   * three-factor decision engine.
    */
   async calculateOrderTotalEtb(
     product: ScrapedProduct,
@@ -228,6 +284,7 @@ export class CalculatorService {
       deliveryEtb,
       marginPercent: resolveDynamicMarginPercent(0),
       rateUsed: rate,
+      usdToAed: await this.resolveUsdToAed(),
       fromCurrency: 'USD',
       matchedCategory: categoryName,
       scrapedUnitUsd,
@@ -235,6 +292,13 @@ export class CalculatorService {
       dubaiUsd: 0,
       dubaiAed: 0,
       factorUsed: 1,
+      factorTier: 'low',
+      factorReason: 'viable',
+      baseEtbRef: 0,
+      baseAed: 0,
+      dubaiCostEtb: 0,
+      sellEtb: 0,
+      profitEtb: 0,
       confidence: 'estimate',
       triggers: ['none'],
     };

@@ -1,4 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import type {
+  FactorReason,
+  FactorTier,
+} from '../calculator/pricing-math';
 import type { PriceConfidence } from '../observations/observations.service';
 
 const STATE_TTL_MS = 30 * 60 * 1000;
@@ -44,6 +48,22 @@ export interface OrderDraft {
   dubaiAed: number | null;
   /** Factor applied to ethUsd to derive dubaiUsd. */
   factorUsed: number | null;
+  /** Which tier won: low / high / avg. */
+  factorTier: FactorTier | null;
+  /** Why that tier was chosen. */
+  factorReason: FactorReason | null;
+  /** ETB reference anchor (ethUsd × USD→ETB). */
+  baseEtbRef: number | null;
+  /** AED anchor (ethUsd × USD→AED). */
+  baseAed: number | null;
+  /** Dubai product cost in ETB (margin base). */
+  dubaiCostEtb: number | null;
+  /** Sell price in ETB before delivery. */
+  sellEtb: number | null;
+  /** Profit portion in ETB. */
+  profitEtb: number | null;
+  /** USD→AED rate snapshot. */
+  usdToAed: number | null;
   /** Confidence of the Dubai cost estimate. */
   confidence: PriceConfidence | null;
   /** Criteria / history triggers that influenced the estimate. */
@@ -89,6 +109,14 @@ export interface UpdatePriceInput {
   dubaiUsd: number;
   dubaiAed: number;
   factorUsed: number;
+  factorTier: FactorTier;
+  factorReason: FactorReason;
+  baseEtbRef: number;
+  baseAed: number;
+  dubaiCostEtb: number;
+  sellEtb: number;
+  profitEtb: number;
+  usdToAed: number;
   confidence: PriceConfidence;
   triggers: string[];
 }
@@ -121,6 +149,14 @@ export class OrderDraftStateService {
       dubaiUsd: null,
       dubaiAed: null,
       factorUsed: null,
+      factorTier: null,
+      factorReason: null,
+      baseEtbRef: null,
+      baseAed: null,
+      dubaiCostEtb: null,
+      sellEtb: null,
+      profitEtb: null,
+      usdToAed: null,
       confidence: null,
       triggers: [],
       step,
@@ -214,6 +250,14 @@ export class OrderDraftStateService {
     draft.dubaiUsd = input.dubaiUsd;
     draft.dubaiAed = input.dubaiAed;
     draft.factorUsed = input.factorUsed;
+    draft.factorTier = input.factorTier;
+    draft.factorReason = input.factorReason;
+    draft.baseEtbRef = input.baseEtbRef;
+    draft.baseAed = input.baseAed;
+    draft.dubaiCostEtb = input.dubaiCostEtb;
+    draft.sellEtb = input.sellEtb;
+    draft.profitEtb = input.profitEtb;
+    draft.usdToAed = input.usdToAed;
     draft.confidence = input.confidence;
     draft.triggers = input.triggers;
     draft.step = 'confirm';

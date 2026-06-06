@@ -10,6 +10,7 @@ export const SETTING_KEYS = {
   DELIVERY_ETB: 'delivery_cost_etb',
   USD_TO_ETB: 'usd_to_etb',
   USD_TO_AED: 'usd_to_aed',
+  PRICING_CEILING_MULTIPLIER: 'pricing_ceiling_multiplier',
 } as const;
 
 @Injectable()
@@ -31,6 +32,10 @@ export class SettingsService implements OnModuleInit {
       [
         SETTING_KEYS.USD_TO_AED,
         pricing.usdToAed != null ? String(pricing.usdToAed) : null,
+      ],
+      [
+        SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
+        String(pricing.ceilingMultiplier),
       ],
     ];
 

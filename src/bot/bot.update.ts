@@ -956,15 +956,21 @@ export class BotUpdate {
       return;
     }
 
-    const nameFieldMatch = suffix.match(/^(fee-name|comm-name|factor-name|factor-high-name):(.+)$/);
+    const nameFieldMatch = suffix.match(
+      /^(fee-name|comm-name|factor-name|factor-low-name|factor-avg-name|factor-high-name):(.+)$/,
+    );
     if (nameFieldMatch) {
       const categoryName = this.decodeCategoryName(nameFieldMatch[2]);
       if (!categoryName) {
         await this.safeAnswer(ctx, 'Invalid category.', true);
         return;
       }
-      if (nameFieldMatch[1] === 'factor-name') {
-        await this.handleCategoryEditFactorPromptByName(ctx, from.id, categoryName);
+      if (nameFieldMatch[1] === 'factor-name' || nameFieldMatch[1] === 'factor-low-name') {
+        await this.handleCategoryEditFactorLowPromptByName(ctx, from.id, categoryName);
+        return;
+      }
+      if (nameFieldMatch[1] === 'factor-avg-name') {
+        await this.handleCategoryEditFactorAvgPromptByName(ctx, from.id, categoryName);
         return;
       }
       if (nameFieldMatch[1] === 'factor-high-name') {
@@ -1261,7 +1267,13 @@ export class BotUpdate {
         });
         break;
       case 'edit-category-factor':
-        await this.handleEditCategoryFactor(ctx, userId, text);
+        await this.handleEditCategoryFactorLow(ctx, userId, text);
+        break;
+      case 'edit-category-factor-low':
+        await this.handleEditCategoryFactorLow(ctx, userId, text);
+        break;
+      case 'edit-category-factor-avg':
+        await this.handleEditCategoryFactorAvg(ctx, userId, text);
         break;
       case 'edit-category-factor-high':
         await this.handleEditCategoryFactorHigh(ctx, userId, text);
@@ -1585,6 +1597,14 @@ export class BotUpdate {
         dubaiUsd: priced.dubaiUsd,
         dubaiAed: priced.dubaiAed,
         factorUsed: priced.factorUsed,
+        factorTier: priced.factorTier,
+        factorReason: priced.factorReason,
+        baseEtbRef: priced.baseEtbRef,
+        baseAed: priced.baseAed,
+        dubaiCostEtb: priced.dubaiCostEtb,
+        sellEtb: priced.sellEtb,
+        profitEtb: priced.profitEtb,
+        usdToAed: priced.usdToAed,
         confidence: priced.confidence,
         triggers: priced.triggers,
       });
@@ -2083,12 +2103,13 @@ export class BotUpdate {
       '',
       `Shipping fee: <b>${this.formatCategoryEtb(category.shippingCost)}</b>`,
       `Commission: <b>${this.formatCategoryEtb(category.commissionEtb)}</b>`,
-      `Dubai factor: <b>${this.formatDubaiFactor(category.dubaiFactor)}</b>`,
-      `High Dubai factor: <b>${this.formatDubaiFactor(category.dubaiFactorHigh)}</b>`,
+      `Low factor: <b>${this.formatDubaiFactor(category.dubaiFactorLow ?? category.dubaiFactor)}</b>`,
+      `Avg factor: <b>${this.formatDubaiFactor(category.dubaiFactorAvg)}</b>`,
+      `High factor: <b>${this.formatDubaiFactor(category.dubaiFactorHigh)}</b>`,
       '--------------------',
       `Delivery total: <b>${this.formatCategoryEtb(this.categoryDeliveryTotal(category))}</b>`,
       '',
-      '<i>Delivery total is added per item at checkout. Dubai factors reverse-engineer Dubai cost from Ethiopia-view USD; the high factor is used when pricing would fall below SHEIN USD × rate.</i>',
+      '<i>Three-factor engine: try LOW, then HIGH (ceiling), then AVG. Margin on Dubai cost only; delivery added after.</i>',
     ].join('\n');
   }
 
@@ -2109,13 +2130,19 @@ export class BotUpdate {
       ],
       [
         Markup.button.callback(
-          '✏️ Edit Dubai factor',
-          `admin:cat:factor-name:${token}`,
+          '✏️ Edit low factor',
+          `admin:cat:factor-low-name:${token}`,
         ),
       ],
       [
         Markup.button.callback(
-          '✏️ Edit high Dubai factor',
+          '✏️ Edit avg factor',
+          `admin:cat:factor-avg-name:${token}`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          '✏️ Edit high factor',
           `admin:cat:factor-high-name:${token}`,
         ),
       ],
@@ -2363,7 +2390,7 @@ export class BotUpdate {
     return { kind: 'ok', value: parsed };
   }
 
-  private async handleCategoryEditFactorPromptByName(
+  private async handleCategoryEditFactorLowPromptByName(
     ctx: Context,
     userId: number,
     categoryName: string,
@@ -2374,14 +2401,16 @@ export class BotUpdate {
       return;
     }
 
-    this.adminAuth.setPending(userId, 'edit-category-factor');
+    this.adminAuth.setPending(userId, 'edit-category-factor-low');
     this.categoryEditState.setPending(userId, category.name);
     await this.safeAnswer(ctx, '', false);
 
+    const current = category.dubaiFactorLow ?? category.dubaiFactor;
     const body =
-      `<b>✏️ ${this.escapeHtml(category.name)} — Dubai factor</b>\n\n` +
-      `Current: <b>${this.formatDubaiFactor(category.dubaiFactor)}</b>\n\n` +
-      'Send the new factor (example: <code>0.76</code>).\n' +
+      `<b>✏️ ${this.escapeHtml(category.name)} — low factor</b>\n\n` +
+      `Current: <b>${this.formatDubaiFactor(current)}</b>\n\n` +
+      'Step 1 of the three-factor engine.\n' +
+      'Send the new factor (example: <code>0.55</code>).\n' +
       'Send <code>clear</code> to remove, or <code>cancel</code> to return.';
 
     const keyboard = Markup.inlineKeyboard([
@@ -2392,14 +2421,65 @@ export class BotUpdate {
       await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminCategoryEditFactor', err, { categoryName });
+      this.fileLogger.logError('adminCategoryEditFactorLow', err, { categoryName });
     }
   }
 
-  private async handleEditCategoryFactor(
+  private async handleEditCategoryFactorLow(
     ctx: Context,
     userId: number,
     text: string,
+  ): Promise<void> {
+    await this.handleEditCategoryFactorTier(ctx, userId, text, 'low');
+  }
+
+  private async handleCategoryEditFactorAvgPromptByName(
+    ctx: Context,
+    userId: number,
+    categoryName: string,
+  ): Promise<void> {
+    const category = await this.categories.findByName(categoryName);
+    if (!category) {
+      await this.safeAnswer(ctx, 'Category not found.', true);
+      return;
+    }
+
+    this.adminAuth.setPending(userId, 'edit-category-factor-avg');
+    this.categoryEditState.setPending(userId, category.name);
+    await this.safeAnswer(ctx, '', false);
+
+    const body =
+      `<b>✏️ ${this.escapeHtml(category.name)} — avg factor</b>\n\n` +
+      `Current: <b>${this.formatDubaiFactor(category.dubaiFactorAvg)}</b>\n\n` +
+      'Step 3 fallback of the three-factor engine.\n' +
+      'Send the new factor (example: <code>0.88</code>).\n' +
+      'Send <code>clear</code> to remove, or <code>cancel</code> to return.';
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('← Back', this.categoryNameAction(category))],
+    ]);
+
+    try {
+      await ctx.editMessageText(body, { parse_mode: 'HTML', ...keyboard });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminCategoryEditFactorAvg', err, { categoryName });
+    }
+  }
+
+  private async handleEditCategoryFactorAvg(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    await this.handleEditCategoryFactorTier(ctx, userId, text, 'avg');
+  }
+
+  private async handleEditCategoryFactorTier(
+    ctx: Context,
+    userId: number,
+    text: string,
+    tier: 'low' | 'avg' | 'high',
   ): Promise<void> {
     if (!(await this.admins.isAdmin(userId))) {
       this.adminAuth.clearPending(userId);
@@ -2415,7 +2495,8 @@ export class BotUpdate {
       return;
     }
 
-    const parsed = this.parseDubaiFactor(text);
+    const parsed =
+      tier === 'high' ? this.parseDubaiFactorHigh(text) : this.parseDubaiFactor(text);
     if (parsed.kind === 'cancel') {
       this.adminAuth.clearPending(userId);
       this.categoryEditState.clearPending(userId);
@@ -2431,10 +2512,22 @@ export class BotUpdate {
       return;
     }
 
-    const updated =
-      typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
-        ? await this.categories.setDubaiFactorByName(categoryKey, parsed.value)
-        : await this.categories.setDubaiFactor(categoryKey, parsed.value);
+    const byName = typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey);
+    let updated: Category | null = null;
+    if (tier === 'low') {
+      updated = byName
+        ? await this.categories.setDubaiFactorLowByName(categoryKey, parsed.value)
+        : await this.categories.setDubaiFactorLow(categoryKey, parsed.value);
+    } else if (tier === 'avg') {
+      updated = byName
+        ? await this.categories.setDubaiFactorAvgByName(categoryKey, parsed.value)
+        : await this.categories.setDubaiFactorAvg(categoryKey, parsed.value);
+    } else {
+      updated = byName
+        ? await this.categories.setDubaiFactorHighByName(categoryKey, parsed.value)
+        : await this.categories.setDubaiFactorHigh(categoryKey, parsed.value);
+    }
+
     this.adminAuth.clearPending(userId);
     this.categoryEditState.clearPending(userId);
 
@@ -2443,9 +2536,16 @@ export class BotUpdate {
       return;
     }
 
+    const value =
+      tier === 'low'
+        ? updated.dubaiFactorLow ?? updated.dubaiFactor
+        : tier === 'avg'
+          ? updated.dubaiFactorAvg
+          : updated.dubaiFactorHigh;
+
     await ctx.reply(
-      `✅ <b>${this.escapeHtml(updated.name)}</b> Dubai factor ` +
-        `<b>${this.formatDubaiFactor(updated.dubaiFactor)}</b>.`,
+      `✅ <b>${this.escapeHtml(updated.name)}</b> ${tier} factor ` +
+        `<b>${this.formatDubaiFactor(value)}</b>.`,
       { parse_mode: 'HTML' },
     );
     await this.showCategoryDetailByName(ctx, updated.name, 'reply');
@@ -2469,8 +2569,8 @@ export class BotUpdate {
     const body =
       `<b>✏️ ${this.escapeHtml(category.name)} — high Dubai factor</b>\n\n` +
       `Current: <b>${this.formatDubaiFactor(category.dubaiFactorHigh)}</b>\n\n` +
-      'Used when pricing would fall below SHEIN USD × rate.\n' +
-      'Send the new factor (example: <code>1.10</code>, may exceed 1.00).\n' +
+      'Step 2 of the three-factor engine (ceiling check).\n' +
+      'Send the new factor (example: <code>1.25</code>, may exceed 1.00).\n' +
       'Send <code>clear</code> to remove, or <code>cancel</code> to return.';
 
     const keyboard = Markup.inlineKeyboard([
@@ -2490,54 +2590,7 @@ export class BotUpdate {
     userId: number,
     text: string,
   ): Promise<void> {
-    if (!(await this.admins.isAdmin(userId))) {
-      this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPending(userId);
-      await ctx.reply('Admin access required.');
-      return;
-    }
-
-    const categoryKey = this.categoryEditState.getPending(userId);
-    if (!categoryKey) {
-      this.adminAuth.clearPending(userId);
-      await ctx.reply('Edit session expired. Open the category list again.');
-      return;
-    }
-
-    const parsed = this.parseDubaiFactorHigh(text);
-    if (parsed.kind === 'cancel') {
-      this.adminAuth.clearPending(userId);
-      this.categoryEditState.clearPending(userId);
-      if (typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)) {
-        await this.showCategoryDetailByName(ctx, categoryKey, 'reply');
-      } else {
-        await this.showCategoryDetail(ctx, categoryKey, 'reply');
-      }
-      return;
-    }
-    if (parsed.kind === 'error') {
-      await ctx.reply(parsed.message, { parse_mode: 'HTML' });
-      return;
-    }
-
-    const updated =
-      typeof categoryKey === 'string' && !/^\d+$/.test(categoryKey)
-        ? await this.categories.setDubaiFactorHighByName(categoryKey, parsed.value)
-        : await this.categories.setDubaiFactorHigh(categoryKey, parsed.value);
-    this.adminAuth.clearPending(userId);
-    this.categoryEditState.clearPending(userId);
-
-    if (!updated) {
-      await ctx.reply('Category not found.');
-      return;
-    }
-
-    await ctx.reply(
-      `✅ <b>${this.escapeHtml(updated.name)}</b> high Dubai factor ` +
-        `<b>${this.formatDubaiFactor(updated.dubaiFactorHigh)}</b>.`,
-      { parse_mode: 'HTML' },
-    );
-    await this.showCategoryDetailByName(ctx, updated.name, 'reply');
+    await this.handleEditCategoryFactorTier(ctx, userId, text, 'high');
   }
 
   private buildAddPriceCategoryKeyboard(list: Category[]) {
@@ -2733,7 +2786,49 @@ export class BotUpdate {
 
     if (draft.step === 'confirm') {
       lines.push('');
-      lines.push(`<b>Estimated Cost: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
+      lines.push('<b>Price breakdown</b>');
+      if (draft.userUnitUsd != null) {
+        lines.push(`USD input: <b>$${draft.userUnitUsd.toFixed(2)}</b>`);
+      }
+      if (draft.baseEtbRef != null) {
+        lines.push(
+          `ETB reference: <b>${Math.round(draft.baseEtbRef).toLocaleString('en-US')} ETB</b>`,
+        );
+      }
+      if (draft.baseAed != null) {
+        lines.push(`Base anchor: <b>${draft.baseAed.toFixed(2)} AED</b>`);
+      }
+      if (draft.factorUsed != null && draft.factorTier) {
+        const reasonLabel =
+          draft.factorReason === 'viable'
+            ? 'viable'
+            : draft.factorReason === 'within_ceiling'
+              ? 'within ceiling'
+              : 'fallback';
+        lines.push(
+          `Factor: <b>${draft.factorTier.toUpperCase()}</b> (${draft.factorUsed.toFixed(4)}) — ${reasonLabel}`,
+        );
+      }
+      if (draft.dubaiAed != null && draft.dubaiCostEtb != null) {
+        lines.push(
+          `Dubai cost: <b>${draft.dubaiAed.toFixed(2)} AED</b> (${Math.round(draft.dubaiCostEtb).toLocaleString('en-US')} ETB)`,
+        );
+      }
+      if (draft.sellEtb != null) {
+        lines.push(
+          `Sell price: <b>${Math.round(draft.sellEtb).toLocaleString('en-US')} ETB</b> (margin ${draft.marginPercent}%)`,
+        );
+      }
+      if (draft.profitEtb != null) {
+        lines.push(
+          `Profit: <b>${Math.round(draft.profitEtb).toLocaleString('en-US')} ETB</b>`,
+        );
+      }
+      lines.push(
+        `Delivery: <b>${draft.deliveryEtb.toLocaleString('en-US')} ETB</b>`,
+      );
+      lines.push('');
+      lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
 
     lines.push('');

@@ -33,6 +33,11 @@ export interface AppConfig {
     eurToEtb: number | null;
     gbpToEtb: number | null;
     deliveryCostEtb: number;
+    ceilingMultiplier: number;
+    defaultFactorLow: number;
+    defaultFactorAvg: number;
+    defaultFactorHigh: number;
+    obsBlend: number;
   };
   gemini: {
     apiKey: string;
@@ -56,6 +61,11 @@ function envStr(name: string, fallback = ''): string {
 function envNum(name: string, fallback: number | null): number | null {
   const v = parseFloat(process.env[name] || '');
   return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function envNumAllowZero(name: string, fallback: number): number {
+  const v = parseFloat(process.env[name] || '');
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
 }
 
 function envBool(name: string, fallback = false): boolean {
@@ -112,6 +122,11 @@ export default function configuration(): AppConfig {
       eurToEtb: envNum('EUR_TO_ETB', null),
       gbpToEtb: envNum('GBP_TO_ETB', null),
       deliveryCostEtb: envNum('DELIVERY_COST_ETB', 500) ?? 500,
+      ceilingMultiplier: envNum('PRICING_CEILING_MULTIPLIER', 1.2) ?? 1.2,
+      defaultFactorLow: envNum('PRICING_DEFAULT_FACTOR_LOW', 0.4) ?? 0.4,
+      defaultFactorAvg: envNum('PRICING_DEFAULT_FACTOR_AVG', 0.72) ?? 0.72,
+      defaultFactorHigh: envNum('PRICING_DEFAULT_FACTOR_HIGH', 1.15) ?? 1.15,
+      obsBlend: envNumAllowZero('PRICING_OBS_BLEND', 0.3),
     },
     gemini: {
       apiKey: envStr('GEMINI_API_KEY'),

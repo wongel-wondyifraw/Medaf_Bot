@@ -44,7 +44,27 @@ export class Category {
   })
   dubaiFactor!: number | null;
 
-  /** Floor-rescue factor when primary pricing falls below SHEIN USD × rate. */
+  @Column({
+    type: 'numeric',
+    name: 'dubai_factor_low',
+    nullable: true,
+    precision: 6,
+    scale: 4,
+    transformer: numericTransformer,
+  })
+  dubaiFactorLow!: number | null;
+
+  @Column({
+    type: 'numeric',
+    name: 'dubai_factor_avg',
+    nullable: true,
+    precision: 6,
+    scale: 4,
+    transformer: numericTransformer,
+  })
+  dubaiFactorAvg!: number | null;
+
+  /** High factor for step 2 of the three-factor decision engine. */
   @Column({
     type: 'numeric',
     name: 'dubai_factor_high',

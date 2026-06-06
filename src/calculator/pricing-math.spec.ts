@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  applyLaw1Pricing,
-  RESCUE_CEILING_FACTOR,
-  RESCUE_FLOOR_FACTOR,
   resolveDynamicMarginPercent,
-  resolveEffectiveRescueFactor,
+  runThreeFactorDecision,
 } from './pricing-math';
 
 describe('resolveDynamicMarginPercent', () => {
@@ -23,66 +20,63 @@ describe('resolveDynamicMarginPercent', () => {
   });
 });
 
-describe('resolveEffectiveRescueFactor', () => {
-  it('uses high factor directly when at or below ceiling', () => {
-    assert.equal(resolveEffectiveRescueFactor(1.1), 1.1);
-    assert.equal(resolveEffectiveRescueFactor(1.15), 1.15);
-  });
-
-  it('averages ceiling and high factor when above ceiling', () => {
-    assert.equal(
-      resolveEffectiveRescueFactor(1.5),
-      (RESCUE_CEILING_FACTOR + 1.5) / 2,
-    );
-  });
-
-  it('clamps to floor factor when high factor is below 1.0', () => {
-    assert.equal(resolveEffectiveRescueFactor(0.9), RESCUE_FLOOR_FACTOR);
-  });
-
-  it('defaults invalid high factor to floor', () => {
-    assert.equal(resolveEffectiveRescueFactor(0), RESCUE_FLOOR_FACTOR);
-    assert.equal(resolveEffectiveRescueFactor(-1), RESCUE_FLOOR_FACTOR);
-  });
-});
-
-describe('floor rescue pricing scenarios', () => {
-  const rate = 165;
-  const deliveryEtb = 500;
+describe('runThreeFactorDecision', () => {
+  const usdToEtb = 165;
+  const usdToAed = 3.67;
+  const etbToAed = usdToAed / usdToEtb;
   const ethUsd = 20;
-  const floorPerUnitEtb = ethUsd * rate;
+  const baseAed = ethUsd * usdToAed;
+  const baseEtbRef = ethUsd * usdToEtb;
+  const deliveryEtb = 500;
 
-  function priceWithFactor(factor: number) {
-    const dubaiCostEtb = ethUsd * factor * rate;
-    return applyLaw1Pricing({ dubaiCostEtb, deliveryEtb, quantity: 1 });
+  const menShoesFactors = { low: 0.55, avg: 0.88, high: 1.25 };
+
+  function decide(factors = menShoesFactors, ceilingMultiplier = 1.2) {
+    return runThreeFactorDecision({
+      baseAed,
+      baseEtbRef,
+      deliveryEtb,
+      etbToAed,
+      quantity: 1,
+      factors,
+      ceilingMultiplier,
+    });
   }
 
-  it('primary factor below floor triggers rescue need', () => {
-    const primary = priceWithFactor(0.627);
-    assert.ok(primary.finalEtbPerUnit < floorPerUnitEtb);
+  it('uses LOW when totalAed >= baseAed', () => {
+    const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
+    assert.equal(result.tier, 'low');
+    assert.equal(result.reason, 'viable');
+    assert.equal(result.factorUsed, 0.9);
+    assert.ok(result.totalAedPerUnit >= baseAed);
   });
 
-  it('rescued high factor 1.1 produces total at or above floor', () => {
-    const effective = resolveEffectiveRescueFactor(1.1);
-    const rescued = priceWithFactor(effective);
-    assert.ok(rescued.finalEtbPerUnit >= floorPerUnitEtb);
+  it('uses HIGH when LOW fails but HIGH is within ceiling', () => {
+    const result = decide({ low: 0.1, avg: 0.88, high: 0.75 });
+    assert.equal(result.tier, 'high');
+    assert.equal(result.reason, 'within_ceiling');
+    assert.ok(result.totalAedPerUnit <= baseAed * 1.2);
   });
 
-  it('rescued averaged high factor 1.5 produces total at or above floor', () => {
-    const effective = resolveEffectiveRescueFactor(1.5);
-    const rescued = priceWithFactor(effective);
-    assert.ok(rescued.finalEtbPerUnit >= floorPerUnitEtb);
+  it('falls back to AVG when HIGH exceeds ceiling', () => {
+    const result = decide({ low: 0.1, avg: 0.88, high: 2.0 });
+    assert.equal(result.tier, 'avg');
+    assert.equal(result.reason, 'fallback');
+    assert.equal(result.factorUsed, 0.88);
   });
 
-  it('clamped factor 1.0 produces total at or above floor', () => {
-    const effective = resolveEffectiveRescueFactor(0.9);
-    assert.equal(effective, 1.0);
-    const rescued = priceWithFactor(effective);
-    assert.ok(rescued.finalEtbPerUnit >= floorPerUnitEtb);
+  it('excludes delivery from margin base (Law 1)', () => {
+    const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
+    const expectedSell = result.dubaiCostEtb * (1 + result.marginPercent / 100);
+    assert.ok(Math.abs(result.sellEtb - expectedSell) < 0.01);
+    assert.ok(result.unitEtbPerUnit >= result.sellEtb + deliveryEtb - 1);
   });
 
-  it('matches worked example for high factor 1.1', () => {
-    const rescued = priceWithFactor(1.1);
-    assert.equal(Math.round(rescued.finalEtbPerUnit), 4856);
+  it('matches worked example shape for $20 Men shoes', () => {
+    const result = decide();
+    assert.equal(result.baseEtbRef, 3300);
+    assert.ok(Math.abs(result.baseAed - 73.4) < 0.01);
+    assert.ok(result.totalEtb > result.baseEtbRef);
+    assert.equal(result.tier, 'avg');
   });
 });
