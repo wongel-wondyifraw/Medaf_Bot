@@ -131,10 +131,12 @@ export class CalculatorService {
 
     const dubaiUsd = input.ethUsd * decision.factorUsed;
     const triggers = [`tier:${decision.tier}`, `reason:${decision.reason}`];
+    if (decision.floored) triggers.push('floor:clamped');
 
     this.logger.log(
       `Priced "${input.categoryName ?? 'unknown'}" $${input.ethUsd} → ` +
-        `${decision.tier} (${decision.factorUsed}) = ${decision.totalEtb} ETB`,
+        `${decision.tier} (${decision.factorUsed}) = ${decision.totalEtb} ETB` +
+        (decision.floored ? ' [floor-clamped]' : ''),
     );
 
     return {

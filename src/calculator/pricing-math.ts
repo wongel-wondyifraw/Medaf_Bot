@@ -52,6 +52,8 @@ export interface ThreeFactorDecisionResult extends StepPricingSnapshot {
   baseAed: number;
   baseEtbRef: number;
   deliveryEtb: number;
+  /** True when the hard floor (USD × rate) raised the final unit price. */
+  floored: boolean;
 }
 
 interface InternalStepInput {
@@ -97,10 +99,57 @@ function computeStep(input: InternalStepInput): StepPricingSnapshot {
 }
 
 /**
+ * Hard floor guarantee: a finished order must never cost the customer less
+ * than the bare USD × rate anchor (baseEtbRef). When a weak factor produces a
+ * unit price below that anchor, we raise the unit price to the floor and
+ * re-derive sell/profit so the breakdown stays internally consistent.
+ */
+function applyFloorClamp(
+  snapshot: StepPricingSnapshot,
+  tier: FactorTier,
+  reason: FactorReason,
+  input: ThreeFactorDecisionInput,
+): ThreeFactorDecisionResult {
+  const floorEtb = Math.max(0, input.baseEtbRef);
+  const base = {
+    tier,
+    reason,
+    baseAed: input.baseAed,
+    baseEtbRef: input.baseEtbRef,
+    deliveryEtb: input.deliveryEtb,
+  };
+
+  if (snapshot.unitEtbPerUnit >= floorEtb) {
+    return { ...base, ...snapshot, floored: false };
+  }
+
+  const unitEtbPerUnit = Math.ceil(floorEtb);
+  const sellEtb = unitEtbPerUnit - input.deliveryEtb;
+  const profitEtb = sellEtb - snapshot.dubaiCostEtb;
+  const sellAed = sellEtb * input.etbToAed;
+  const profitAed = profitEtb * input.etbToAed;
+
+  return {
+    ...base,
+    ...snapshot,
+    sellEtb,
+    profitEtb,
+    sellAed,
+    profitAed,
+    unitEtbPerUnit,
+    totalEtb: Math.ceil(unitEtbPerUnit * input.quantity),
+    floored: true,
+  };
+}
+
+/**
  * Three-factor decision engine (AED anchor):
  * 1) LOW — use if totalAed >= baseAed
  * 2) HIGH — use if totalAed <= baseAed × ceilingMultiplier
  * 3) AVG — fallback
+ *
+ * A final hard floor clamp guarantees the unit price never drops below the
+ * USD × rate anchor, whichever tier wins.
  *
  * Law 1: margin on dubai cost only; delivery added after; qty last.
  */
@@ -119,38 +168,17 @@ export function runThreeFactorDecision(
 
   const low = computeStep({ ...stepBase, factor: input.factors.low });
   if (low.totalAedPerUnit >= input.baseAed) {
-    return {
-      tier: 'low',
-      reason: 'viable',
-      baseAed: input.baseAed,
-      baseEtbRef: input.baseEtbRef,
-      deliveryEtb: input.deliveryEtb,
-      ...low,
-    };
+    return applyFloorClamp(low, 'low', 'viable', input);
   }
 
   const high = computeStep({ ...stepBase, factor: input.factors.high });
   const ceilingAed = input.baseAed * input.ceilingMultiplier;
   if (high.totalAedPerUnit <= ceilingAed) {
-    return {
-      tier: 'high',
-      reason: 'within_ceiling',
-      baseAed: input.baseAed,
-      baseEtbRef: input.baseEtbRef,
-      deliveryEtb: input.deliveryEtb,
-      ...high,
-    };
+    return applyFloorClamp(high, 'high', 'within_ceiling', input);
   }
 
   const avg = computeStep({ ...stepBase, factor: input.factors.avg });
-  return {
-    tier: 'avg',
-    reason: 'fallback',
-    baseAed: input.baseAed,
-    baseEtbRef: input.baseEtbRef,
-    deliveryEtb: input.deliveryEtb,
-    ...avg,
-  };
+  return applyFloorClamp(avg, 'avg', 'fallback', input);
 }
 
 export interface Law1PricingInput {

@@ -72,6 +72,20 @@ describe('runThreeFactorDecision', () => {
     assert.ok(result.unitEtbPerUnit >= result.sellEtb + deliveryEtb - 1);
   });
 
+  it('clamps unit price to the USD × rate floor for weak factors', () => {
+    const result = decide({ low: 0.2, avg: 0.3, high: 0.35 });
+    assert.equal(result.floored, true);
+    assert.equal(result.unitEtbPerUnit, Math.ceil(baseEtbRef));
+    assert.ok(result.unitEtbPerUnit >= baseEtbRef);
+    assert.equal(result.totalEtb, Math.ceil(baseEtbRef));
+  });
+
+  it('does not clamp when the price already clears the floor', () => {
+    const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
+    assert.equal(result.floored, false);
+    assert.ok(result.unitEtbPerUnit > baseEtbRef);
+  });
+
   it('matches worked example shape for $20 Men shoes', () => {
     const result = decide();
     assert.equal(result.baseEtbRef, 3300);
