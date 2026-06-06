@@ -2786,49 +2786,7 @@ export class BotUpdate {
 
     if (draft.step === 'confirm') {
       lines.push('');
-      lines.push('<b>Price breakdown</b>');
-      if (draft.userUnitUsd != null) {
-        lines.push(`USD input: <b>$${draft.userUnitUsd.toFixed(2)}</b>`);
-      }
-      if (draft.baseEtbRef != null) {
-        lines.push(
-          `ETB reference: <b>${Math.round(draft.baseEtbRef).toLocaleString('en-US')} ETB</b>`,
-        );
-      }
-      if (draft.baseAed != null) {
-        lines.push(`Base anchor: <b>${draft.baseAed.toFixed(2)} AED</b>`);
-      }
-      if (draft.factorUsed != null && draft.factorTier) {
-        const reasonLabel =
-          draft.factorReason === 'viable'
-            ? 'viable'
-            : draft.factorReason === 'within_ceiling'
-              ? 'within ceiling'
-              : 'fallback';
-        lines.push(
-          `Factor: <b>${draft.factorTier.toUpperCase()}</b> (${draft.factorUsed.toFixed(4)}) — ${reasonLabel}`,
-        );
-      }
-      if (draft.dubaiAed != null && draft.dubaiCostEtb != null) {
-        lines.push(
-          `Dubai cost: <b>${draft.dubaiAed.toFixed(2)} AED</b> (${Math.round(draft.dubaiCostEtb).toLocaleString('en-US')} ETB)`,
-        );
-      }
-      if (draft.sellEtb != null) {
-        lines.push(
-          `Sell price: <b>${Math.round(draft.sellEtb).toLocaleString('en-US')} ETB</b> (margin ${draft.marginPercent}%)`,
-        );
-      }
-      if (draft.profitEtb != null) {
-        lines.push(
-          `Profit: <b>${Math.round(draft.profitEtb).toLocaleString('en-US')} ETB</b>`,
-        );
-      }
-      lines.push(
-        `Delivery: <b>${draft.deliveryEtb.toLocaleString('en-US')} ETB</b>`,
-      );
-      lines.push('');
-      lines.push(`<b>Total: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
+      lines.push(`<b>Estimated Cost: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
     }
 
     lines.push('');
