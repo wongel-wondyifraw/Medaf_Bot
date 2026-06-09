@@ -17,7 +17,7 @@ const CLOTHING_KEYWORDS = [
   'dress', 'cloth', 'shirt', 'blouse', 'tee', 't-shirt', 'tank', 'top',
   'pants', 'trousers', 'jeans', 'leggings', 'shorts',
   'sweatpants', 'trackpants', 'jogpants', 'cargopants',
-  'skirt',
+  'skirt', 'skirts',
   'jacket', 'coat', 'blazer', 'cardigan', 'sweater', 'hoodie', 'sweatshirt',
   'pullover', 'jumper',
   'jumpsuit', 'romper', 'bodysuit', 'overall',

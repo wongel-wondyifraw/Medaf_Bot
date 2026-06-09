@@ -13,7 +13,8 @@ export const CATEGORY_THREE_FACTOR_SEED: Record<string, ThreeFactors> = {
   'Girls Hill Shoes': { low: 0.45, avg: 0.78, high: 1.18 },
   Jeans: { low: 0.45, avg: 0.78, high: 1.18 },
   Trousers: { low: 0.42, avg: 0.75, high: 1.15 },
-  Dress: { low: 0.4, avg: 0.72, high: 1.15 },
+  // Calibrated for ~3,700 ETB at USD $12, rate 200, delivery 800 (600+200), ×1.1 final.
+  Dress: { low: 0.4, avg: 0.82, high: 1.15 },
   'Short Dress': { low: 0.38, avg: 0.7, high: 1.12 },
   'Body top': { low: 0.35, avg: 0.68, high: 1.1 },
   Shirt: { low: 0.38, avg: 0.7, high: 1.12 },
