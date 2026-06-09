@@ -26,6 +26,7 @@ import { TshirtDubaiFactor1780600000000 } from '../migrations/1780600000000-Tshi
 import { CategoryDubaiFactorHigh1780700000000 } from '../migrations/1780700000000-CategoryDubaiFactorHigh';
 import { CategoryThreeFactors1780800000000 } from '../migrations/1780800000000-CategoryThreeFactors';
 import { CategoryAiCreated1780900000000 } from '../migrations/1780900000000-CategoryAiCreated';
+import { UnderwearDubaiFactors1781000000000 } from '../migrations/1781000000000-UnderwearDubaiFactors';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -61,6 +62,7 @@ export function buildTypeOrmOptions(opts: {
       CategoryDubaiFactorHigh1780700000000,
       CategoryThreeFactors1780800000000,
       CategoryAiCreated1780900000000,
+      UnderwearDubaiFactors1781000000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],
