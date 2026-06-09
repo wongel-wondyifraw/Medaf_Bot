@@ -45,6 +45,8 @@ export interface AppConfig {
     model: string;
     enabled: boolean;
     timeoutMs: number;
+    autoCreate: boolean;
+    minConfidence: 'high' | 'medium' | 'low';
   };
   groq: {
     apiKey: string;
@@ -135,6 +137,12 @@ export default function configuration(): AppConfig {
       model: envStr('GEMINI_MODEL', 'gemini-2.5-flash'),
       enabled: envBool('GEMINI_CATEGORY_ENABLED', true),
       timeoutMs: envNum('GEMINI_TIMEOUT_MS', 6000) ?? 6000,
+      autoCreate: envBool('GEMINI_CATEGORY_AUTO_CREATE', true),
+      minConfidence: (() => {
+        const v = envStr('GEMINI_CATEGORY_MIN_CONFIDENCE', 'medium').toLowerCase();
+        if (v === 'high' || v === 'low') return v;
+        return 'medium' as const;
+      })(),
     },
     groq: {
       apiKey: envStr('GROQ_API_KEY'),

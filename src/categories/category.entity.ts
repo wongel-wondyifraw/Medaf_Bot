@@ -74,4 +74,10 @@ export class Category {
     transformer: numericTransformer,
   })
   dubaiFactorHigh!: number | null;
+
+  @Column({ type: 'boolean', name: 'ai_created', default: false })
+  aiCreated!: boolean;
+
+  @Column({ type: 'text', name: 'source_title', nullable: true })
+  sourceTitle!: string | null;
 }

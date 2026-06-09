@@ -4,9 +4,16 @@ import axios from 'axios';
 import { AppConfig } from '../config/configuration';
 import {
   buildCategoryPrompt,
+  buildCategoryResolvePrompt,
+  CategoryResolveResult,
   parseCategoryAnswer,
+  parseCategoryResolveAnswer,
   resolveCategoryAnswer,
 } from './category-ai.shared';
+import {
+  categoryLinkContextCacheKey,
+  CategoryLinkContext,
+} from './category-link-context';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -26,13 +33,19 @@ interface GeminiResponse {
 @Injectable()
 export class CategoryAiService {
   private readonly logger = new Logger(CategoryAiService.name);
-  private readonly cache = new Map<string, string | null>();
+  private readonly classifyCache = new Map<string, string | null>();
+  private readonly resolveCache = new Map<string, CategoryResolveResult | null>();
 
   constructor(private readonly config: ConfigService<AppConfig, true>) {}
 
   isEnabled(): boolean {
     const g = this.config.get('gemini', { infer: true });
     return g.enabled && !!g.apiKey;
+  }
+
+  isAutoCreateEnabled(): boolean {
+    const g = this.config.get('gemini', { infer: true });
+    return g.autoCreate;
   }
 
   /**
@@ -49,12 +62,12 @@ export class CategoryAiService {
 
     const validSet = new Set(categoryNames);
     const cacheKey = `${categoryNames.join('|')}::${cleanTitle.toLowerCase()}`;
-    if (this.cache.has(cacheKey)) return this.cache.get(cacheKey) ?? null;
+    if (this.classifyCache.has(cacheKey)) return this.classifyCache.get(cacheKey) ?? null;
 
     try {
-      const answer = await this.callGemini(cleanTitle, categoryNames);
+      const answer = await this.callGeminiClassify(cleanTitle, categoryNames);
       const resolved = resolveCategoryAnswer(answer, validSet);
-      this.cache.set(cacheKey, resolved);
+      this.classifyCache.set(cacheKey, resolved);
       if (resolved) {
         this.logger.log(`Gemini classified "${cleanTitle}" -> ${resolved}`);
       }
@@ -68,7 +81,44 @@ export class CategoryAiService {
     }
   }
 
-  private async callGemini(
+  /**
+   * Resolves a product link context to an existing category match or a new
+   * category proposal. Returns null on disable, error, or unparseable response.
+   */
+  async resolve(
+    ctx: CategoryLinkContext,
+    categoryNames: string[],
+  ): Promise<CategoryResolveResult | null> {
+    if (!this.isEnabled()) return null;
+    const cleanTitle = (ctx.title || '').trim();
+    if (!cleanTitle || categoryNames.length === 0) return null;
+
+    const cacheKey = categoryLinkContextCacheKey(ctx, categoryNames);
+    if (this.resolveCache.has(cacheKey)) {
+      return this.resolveCache.get(cacheKey) ?? null;
+    }
+
+    try {
+      const text = await this.callGeminiResolve(ctx, categoryNames);
+      const parsed = parseCategoryResolveAnswer(text);
+      this.resolveCache.set(cacheKey, parsed);
+      if (parsed) {
+        this.logger.log(
+          `Gemini resolved "${cleanTitle}" -> action=${parsed.action}` +
+            (parsed.action === 'match' ? ` category=${parsed.category}` : ''),
+        );
+      }
+      return parsed;
+    } catch (err) {
+      const e = err as Error;
+      this.logger.warn(
+        `Gemini resolve failed for "${cleanTitle}" (${e.message})`,
+      );
+      return null;
+    }
+  }
+
+  private async callGeminiClassify(
     title: string,
     categoryNames: string[],
   ): Promise<string | null> {
@@ -95,5 +145,33 @@ export class CategoryAiService {
 
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     return parseCategoryAnswer(text);
+  }
+
+  private async callGeminiResolve(
+    ctx: CategoryLinkContext,
+    categoryNames: string[],
+  ): Promise<string> {
+    const g = this.config.get('gemini', { infer: true });
+    const url = `${GEMINI_BASE}/${encodeURIComponent(g.model)}:generateContent`;
+    const prompt = buildCategoryResolvePrompt(ctx, categoryNames);
+
+    const res = await axios.post<GeminiResponse>(
+      url,
+      {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 120,
+          responseMimeType: 'application/json',
+        },
+      },
+      {
+        params: { key: g.apiKey },
+        timeout: g.timeoutMs,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+
+    return res.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   }
 }

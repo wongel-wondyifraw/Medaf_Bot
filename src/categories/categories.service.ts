@@ -3,11 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
+  BroadGroup,
   defaultDubaiFactorForGroup,
   resolveBroadGroup,
 } from '../calculator/broad-group';
 import { AppConfig } from '../config/configuration';
+import {
+  CategoryNewProposal,
+  confidenceMeetsMinimum,
+  normalizeCategoryName,
+} from './category-ai.shared';
 import { CategoryAiService } from './category-ai.service';
+import { CategoryLinkContext } from './category-link-context';
 import {
   CATEGORY_THREE_FACTOR_SEED,
   readEnvFactorOverride,
@@ -17,6 +24,19 @@ import { CategoryGroqService } from './category-groq.service';
 import { Category } from './category.entity';
 
 export type { ThreeFactors };
+
+export type CategoryResolveSource =
+  | 'gemini_match'
+  | 'gemini_created'
+  | 'keyword'
+  | 'none';
+
+export interface CategoryResolveOutcome {
+  category: Category | null;
+  source: CategoryResolveSource;
+  created?: boolean;
+  peerCategoryName?: string | null;
+}
 
 /**
  * Keywords that map SHEIN titles/slugs onto the local delivery catalog.
@@ -174,6 +194,9 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
   ],
 };
 
+/** Delivery/pricing category names used to filter the AI prompt list. */
+const PRICING_CATEGORY_NAMES = new Set(Object.keys(KEYWORD_TO_CATEGORY));
+
 /**
  * Weak keywords only win when no strong keyword matched anywhere.
  * Use for occasion/style words (e.g. "wedding") that appear in many
@@ -280,6 +303,129 @@ export class CategoriesService {
 
   findByName(name: string): Promise<Category | null> {
     return this.repo.findOne({ where: { name } });
+  }
+
+  findByNameIgnoreCase(name: string): Promise<Category | null> {
+    const trimmed = name.trim();
+    if (!trimmed) return Promise.resolve(null);
+    return this.repo
+      .createQueryBuilder('category')
+      .where('LOWER(category.name) = LOWER(:name)', { name: trimmed })
+      .getOne();
+  }
+
+  /**
+   * Resolves a product link context via Gemini (match or auto-create), then
+   * keyword fallback. Returns source metadata for admin notifications.
+   */
+  async resolveCategoryForProduct(
+    ctx: CategoryLinkContext,
+  ): Promise<CategoryResolveOutcome> {
+    const title = (ctx.title || '').trim();
+    if (!title) return { category: null, source: 'none' };
+
+    const all = await this.findAll();
+    const pricingCats = this.filterPricingCategories(all);
+    const namesForAi =
+      pricingCats.length > 0
+        ? pricingCats.map((c) => c.name)
+        : all.map((c) => c.name);
+
+    if (this.categoryAi.isEnabled()) {
+      const resolved = await this.categoryAi.resolve(ctx, namesForAi);
+      if (resolved) {
+        const gemini = this.config.get('gemini', { infer: true });
+
+        if (resolved.action === 'match') {
+          const match =
+            all.find((c) => c.name === resolved.category) ??
+            (await this.findByName(resolved.category));
+          if (match) {
+            return { category: match, source: 'gemini_match' };
+          }
+        }
+
+        if (
+          resolved.action === 'create' &&
+          this.categoryAi.isAutoCreateEnabled() &&
+          confidenceMeetsMinimum(resolved.confidence, gemini.minConfidence)
+        ) {
+          const created = await this.createFromAiProposal(
+            resolved.newCategory,
+            title,
+          );
+          if (created.category) {
+            return {
+              category: created.category,
+              source: created.created ? 'gemini_created' : 'gemini_match',
+              created: created.created,
+              peerCategoryName: created.peerCategoryName,
+            };
+          }
+        }
+      }
+    }
+
+    const keyword = await this.findBestMatchByText(title);
+    return {
+      category: keyword,
+      source: keyword ? 'keyword' : 'none',
+    };
+  }
+
+  /**
+   * Auto-creates a category from a Gemini proposal. Copies shipping/commission
+   * from median peers in the same broad group. Returns existing row on dedupe.
+   */
+  async createFromAiProposal(
+    proposal: CategoryNewProposal,
+    sourceTitle: string,
+  ): Promise<{
+    category?: Category;
+    error?: 'duplicate' | 'invalid';
+    created?: boolean;
+    peerCategoryName?: string | null;
+  }> {
+    const name = normalizeCategoryName(proposal.name);
+    if (!name) return { error: 'invalid' };
+
+    const existing = await this.findByNameIgnoreCase(name);
+    if (existing) {
+      return { category: existing, created: false, peerCategoryName: null };
+    }
+
+    const all = await this.findAll();
+    const peerCosts = this.medianPeerCosts(proposal.broadGroup, all);
+
+    try {
+      const saved = await this.repo.save({
+        name,
+        shippingCost: peerCosts.shippingCost,
+        commissionEtb: peerCosts.commissionEtb,
+        dubaiFactor: proposal.dubaiFactorLow,
+        dubaiFactorLow: proposal.dubaiFactorLow,
+        dubaiFactorAvg: proposal.dubaiFactorAvg,
+        dubaiFactorHigh: proposal.dubaiFactorHigh,
+        aiCreated: true,
+        sourceTitle: sourceTitle.slice(0, 500),
+      });
+      this.logger.log(
+        `AI category created: ${saved.name} (#${saved.id}) ` +
+          `factors=${proposal.dubaiFactorLow}/${proposal.dubaiFactorAvg}/${proposal.dubaiFactorHigh} ` +
+          `peer=${peerCosts.peerName ?? 'none'}`,
+      );
+      return {
+        category: saved,
+        created: true,
+        peerCategoryName: peerCosts.peerName,
+      };
+    } catch (err) {
+      const again = await this.findByNameIgnoreCase(name);
+      if (again) {
+        return { category: again, created: false, peerCategoryName: null };
+      }
+      throw err;
+    }
   }
 
   async create(
@@ -672,5 +818,58 @@ export class CategoriesService {
     if (!needle) return false;
     const escaped = needle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
+  }
+
+  private filterPricingCategories(categories: Category[]): Category[] {
+    const filtered = categories.filter(
+      (c) =>
+        PRICING_CATEGORY_NAMES.has(c.name) ||
+        c.shippingCost != null ||
+        c.commissionEtb != null,
+    );
+    return filtered.length > 0 ? filtered : categories;
+  }
+
+  private medianPeerCosts(
+    broadGroup: BroadGroup,
+    all: Category[],
+  ): {
+    shippingCost: number | null;
+    commissionEtb: number | null;
+    peerName: string | null;
+  } {
+    const peers = all.filter((c) => {
+      if (resolveBroadGroup(c.name) !== broadGroup) return false;
+      return c.shippingCost != null || c.commissionEtb != null;
+    });
+    if (peers.length === 0) {
+      return { shippingCost: null, commissionEtb: null, peerName: null };
+    }
+
+    const median = (values: number[]): number | null => {
+      if (values.length === 0) return null;
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+    };
+
+    const shippingVals = peers
+      .map((c) => c.shippingCost)
+      .filter((v): v is number => v != null && v >= 0);
+    const commissionVals = peers
+      .map((c) => c.commissionEtb)
+      .filter((v): v is number => v != null && v >= 0);
+
+    const reference = peers.find(
+      (c) => c.shippingCost != null || c.commissionEtb != null,
+    );
+
+    return {
+      shippingCost: median(shippingVals),
+      commissionEtb: median(commissionVals),
+      peerName: reference?.name ?? null,
+    };
   }
 }

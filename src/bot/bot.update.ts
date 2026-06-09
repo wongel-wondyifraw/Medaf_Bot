@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Action, Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
-import { Context, Markup } from 'telegraf';
+import { Action, Command, Ctx, InjectBot, On, Start, Update } from 'nestjs-telegraf';
+import { Context, Markup, Telegraf } from 'telegraf';
 import { AdminsService } from '../admins/admins.service';
 import { AddPriceStateService } from '../admins/add-price-state.service';
 import {
@@ -12,6 +12,7 @@ import { CalculatorService } from '../calculator/calculator.service';
 import { DubaiEstimatorService } from '../calculator/dubai-estimator.service';
 import { resolveBroadGroup } from '../calculator/broad-group';
 import { CategoriesService } from '../categories/categories.service';
+import { buildCategoryLinkContext } from '../categories/category-link-context';
 import { CategoryEditStateService } from '../categories/category-edit-state.service';
 import { Category } from '../categories/category.entity';
 import { formatGmtPlus3 } from '../common/date-format';
@@ -44,6 +45,7 @@ export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
 
   constructor(
+    @InjectBot() private readonly bot: Telegraf,
     private readonly resellers: ResellersService,
     private readonly orders: OrdersService,
     private readonly orderDraft: OrderDraftStateService,
@@ -284,7 +286,26 @@ export class BotUpdate {
 
     const sizes = isClothingTitle(productTitle) ? [...DEFAULT_CLOTHING_SIZES] : [];
 
-    const category = await this.categories.findBestCategory(productTitle);
+    const linkContext = buildCategoryLinkContext({
+      title: productTitle,
+      url,
+      rawMessage,
+      productId: resolvedProductId,
+      imageUrl: fetched?.image ?? null,
+      slugTitle,
+      freeText,
+    });
+    const categoryOutcome = await this.categories.resolveCategoryForProduct(linkContext);
+    const category = categoryOutcome.category;
+
+    if (categoryOutcome.created && category) {
+      await this.notifyAdminsAiCategoryCreated(
+        category,
+        productTitle,
+        categoryOutcome.peerCategoryName,
+      );
+    }
+
     const synthesized: ScrapedProduct = {
       title: productTitle,
       price: 0,
@@ -327,13 +348,56 @@ export class BotUpdate {
 
     this.logger.log(
       `Manual draft for telegramId=${userId} title="${productTitle.slice(0, 60)}" ` +
-        `category="${category?.name ?? 'default'}" clothing=${sizes.length > 0}`,
+        `category="${category?.name ?? 'default'}" source=${categoryOutcome.source} ` +
+        `clothing=${sizes.length > 0}`,
     );
 
     await ctx.reply(this.buildDraftMessage(draft), {
       parse_mode: 'HTML',
       ...this.buildDraftKeyboard(draft),
     });
+  }
+
+  private async notifyAdminsAiCategoryCreated(
+    category: Category,
+    sourceTitle: string,
+    peerCategoryName: string | null | undefined,
+  ): Promise<void> {
+    const admins = await this.admins.findAll();
+    if (admins.length === 0) return;
+
+    const factors = [
+      category.dubaiFactorLow ?? category.dubaiFactor,
+      category.dubaiFactorAvg,
+      category.dubaiFactorHigh,
+    ]
+      .filter((v): v is number => v != null)
+      .map((v) => v.toFixed(2))
+      .join(' / ');
+
+    const peerLine = peerCategoryName
+      ? `Shipping/commission copied from <b>${this.escapeHtml(peerCategoryName)}</b>.`
+      : 'Shipping/commission not set (no peer in group).';
+
+    const message =
+      `<b>AI created category</b> <b>${this.escapeHtml(category.name)}</b>\n` +
+      `From title: ${this.escapeHtml(sourceTitle.slice(0, 120))}\n` +
+      `Dubai factors: ${this.escapeHtml(factors || 'defaults')}\n` +
+      `${peerLine}\n` +
+      `Review in Categories.`;
+
+    for (const admin of admins) {
+      try {
+        await this.bot.telegram.sendMessage(admin.telegramId, message, {
+          parse_mode: 'HTML',
+        });
+      } catch (err) {
+        const e = err as Error;
+        this.logger.warn(
+          `Failed to notify admin ${admin.telegramId} about AI category: ${e.message}`,
+        );
+      }
+    }
   }
 
   private safeHostname(url: string): string {
