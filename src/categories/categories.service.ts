@@ -163,7 +163,30 @@ const KEYWORD_TO_CATEGORY: Record<string, string[]> = {
     'jewelry',
     'jewellery',
   ],
-  Underwear: ['underwear', 'bra', 'panties', 'lingerie', 'thong', 'brief', 'boxer'],
+  Underwear: [
+    'underwear',
+    'bra',
+    'panties',
+    'lingerie',
+    'thong',
+    'brief',
+    'boxer',
+    'nipple cover',
+    'nipple covers',
+    'pasties',
+    'bra accessory',
+    'bra accessories',
+    'breast cover',
+    'breast covers',
+    'sticky bra',
+    'adhesive bra',
+    'invisible bra',
+    'strapless bra',
+    'bra pad',
+    'bra pads',
+    'bra insert',
+    'bra inserts',
+  ],
   Cosmetics: [
     'cosmetic',
     'cosmetics',
@@ -216,7 +239,44 @@ const WEAK_KEYWORDS_BY_CATEGORY: Record<string, readonly string[]> = {
  */
 const CATEGORY_PRIORITY: Record<string, number> = {
   'Girls Hill Shoes': 2,
+  Underwear: 3,
 };
+
+/**
+ * Underwear keywords that identify the actual product type (not generic
+ * style words). Used to apply Underwear's elevated CATEGORY_PRIORITY.
+ */
+const UNDERWEAR_PRODUCT_KEYWORDS = new Set(
+  [
+    'nipple cover',
+    'nipple covers',
+    'pasties',
+    'bra accessory',
+    'bra accessories',
+    'breast cover',
+    'breast covers',
+    'sticky bra',
+    'adhesive bra',
+    'invisible bra',
+    'strapless bra',
+    'bra pad',
+    'bra pads',
+    'bra insert',
+    'bra inserts',
+    'underwear',
+    'panties',
+    'thong',
+    'brief',
+    'boxer',
+  ].map((k) => k.toLowerCase()),
+);
+
+/**
+ * Suppresses "wedding dress" / "wedding gown" strong matches when the title
+ * describes accessories or supplies for weddings, not an actual dress.
+ */
+const WEDDING_DRESS_ACCESSORY_CONTEXT =
+  /\bwedding\s+(?:dress|gown)\s+(?:accessories|accessory|supplies|supply)\b/i;
 
 /**
  * Categories that only apply to women's products. When the product title
@@ -761,7 +821,13 @@ export class CategoriesService {
       cat: Category,
       kw: string,
     ): CategoryMatch => {
-      const priority = CATEGORY_PRIORITY[cat.name] ?? 0;
+      let priority = CATEGORY_PRIORITY[cat.name] ?? 0;
+      if (
+        cat.name === 'Underwear' &&
+        UNDERWEAR_PRODUCT_KEYWORDS.has(kw.toLowerCase())
+      ) {
+        priority = Math.max(priority, CATEGORY_PRIORITY.Underwear ?? 3);
+      }
       const score = kw.length;
       const candidate: CategoryMatch = { category: cat, priority, score };
       if (!current) return candidate;
@@ -784,6 +850,7 @@ export class CategoriesService {
       const weakSet = weakByCategory.get(catName);
       for (const kw of keywords) {
         if (!this.wordMatches(lower, kw)) continue;
+        if (this.shouldSkipKeywordMatch(lower, catName, kw)) continue;
         const tier = weakSet?.has(kw.toLowerCase()) ? 'weak' : 'strong';
         if (tier === 'strong') {
           bestStrong = chooseBest(bestStrong, cat, kw);
@@ -818,6 +885,25 @@ export class CategoriesService {
     if (!needle) return false;
     const escaped = needle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
+  }
+
+  /**
+   * Drops misleading keyword hits (e.g. "wedding dress" inside "wedding dress
+   * accessories" when the product is lingerie, not a gown).
+   */
+  private shouldSkipKeywordMatch(
+    lowerTitle: string,
+    categoryName: string,
+    keyword: string,
+  ): boolean {
+    if (categoryName !== 'Wedding Dress') return false;
+    const kw = keyword.toLowerCase();
+    if (kw !== 'wedding dress' && kw !== 'wedding gown') return false;
+    if (WEDDING_DRESS_ACCESSORY_CONTEXT.test(lowerTitle)) return true;
+    if (/\b(?:lingerie|nipple|pasties|bra\s+accessories?)\b/i.test(lowerTitle)) {
+      return true;
+    }
+    return false;
   }
 
   private filterPricingCategories(categories: Category[]): Category[] {
