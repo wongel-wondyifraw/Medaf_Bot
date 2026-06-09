@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   resolveDynamicMarginPercent,
+  resolveUsdBandDubaiFactor,
   runThreeFactorDecision,
+  runUsdBandDecision,
+  USD_BAND_FACTOR_HIGH,
+  USD_BAND_FACTOR_MID,
+  USD_BAND_FACTOR_UNDER_10,
 } from './pricing-math';
 
 describe('resolveDynamicMarginPercent', () => {
@@ -17,6 +22,72 @@ describe('resolveDynamicMarginPercent', () => {
 
   it('returns 15% above 15,000 ETB', () => {
     assert.equal(resolveDynamicMarginPercent(15001), 15);
+  });
+});
+
+describe('resolveUsdBandDubaiFactor', () => {
+  it('uses factor 1.0 below $10', () => {
+    const r = resolveUsdBandDubaiFactor(9.99);
+    assert.equal(r.factor, USD_BAND_FACTOR_UNDER_10);
+    assert.equal(r.band, 'under_10');
+    assert.equal(r.tier, 'low');
+  });
+
+  it('uses factor 0.92 from $10 through $20', () => {
+    for (const usd of [10, 15, 20]) {
+      const r = resolveUsdBandDubaiFactor(usd);
+      assert.equal(r.factor, USD_BAND_FACTOR_MID);
+      assert.equal(r.band, 'mid');
+      assert.equal(r.tier, 'avg');
+    }
+  });
+
+  it('uses factor 0.82 above $20', () => {
+    const r = resolveUsdBandDubaiFactor(20.01);
+    assert.equal(r.factor, USD_BAND_FACTOR_HIGH);
+    assert.equal(r.band, 'high');
+    assert.equal(r.tier, 'high');
+  });
+});
+
+describe('runUsdBandDecision', () => {
+  const usdToEtb = 200;
+  const usdToAed = 3.67;
+  const etbToAed = usdToAed / usdToEtb;
+  const deliveryEtb = 800;
+
+  function bandPrice(ethUsd: number) {
+    return runUsdBandDecision({
+      ethUsd,
+      baseAed: ethUsd * usdToAed,
+      baseEtbRef: ethUsd * usdToEtb,
+      deliveryEtb,
+      etbToAed,
+      quantity: 1,
+      finalMultiplier: 1.1,
+    });
+  }
+
+  it('hits ~3,500 ETB at $10 with Dress delivery (rate 200, ×1.1)', () => {
+    const r = bandPrice(10);
+    assert.equal(r.reason, 'usd_band');
+    assert.equal(r.factorUsed, USD_BAND_FACTOR_MID);
+    assert.ok(r.totalEtb >= 3500 && r.totalEtb <= 3520);
+  });
+
+  it('applies the same mid factor for $12 (Dress delivery)', () => {
+    const r = bandPrice(12);
+    assert.equal(r.factorUsed, USD_BAND_FACTOR_MID);
+    assert.equal(r.tier, 'avg');
+    assert.ok(r.totalEtb > 3500);
+  });
+
+  it('picks band-specific factors for $8 vs $12', () => {
+    const under10 = bandPrice(8);
+    const mid = bandPrice(12);
+    assert.equal(under10.factorUsed, USD_BAND_FACTOR_UNDER_10);
+    assert.equal(mid.factorUsed, USD_BAND_FACTOR_MID);
+    assert.notEqual(under10.factorUsed, mid.factorUsed);
   });
 });
 

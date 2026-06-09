@@ -12,7 +12,7 @@ import {
   FactorReason,
   FactorTier,
   resolveDynamicMarginPercent,
-  runThreeFactorDecision,
+  runUsdBandDecision,
 } from './pricing-math';
 
 export { resolveDynamicMarginPercent } from './pricing-math';
@@ -105,39 +105,32 @@ export class CalculatorService {
 
     const usdToAed = await this.resolveUsdToAed();
     const etbToAed = usdToEtb > 0 ? usdToAed / usdToEtb : 0;
-    const ceilingMultiplier = await this.resolveCeilingMultiplier();
     const finalMultiplier = await this.resolveFinalMultiplier();
 
     const baseEtbRef = input.ethUsd * usdToEtb;
     const baseAed = input.ethUsd * usdToAed;
 
-    const factors = await this.categoriesService.resolveThreeFactors(
-      input.categoryName,
-    );
-    factors.avg = await this.blendObservedAvgFactor(
-      input.productId,
-      input.categoryName,
-      factors.avg,
-    );
-
-    const decision = runThreeFactorDecision({
+    const decision = runUsdBandDecision({
+      ethUsd: input.ethUsd,
       baseAed,
       baseEtbRef,
       deliveryEtb: input.deliveryEtb,
       etbToAed,
       quantity: input.quantity,
-      factors,
-      ceilingMultiplier,
       finalMultiplier,
     });
 
     const dubaiUsd = input.ethUsd * decision.factorUsed;
-    const triggers = [`tier:${decision.tier}`, `reason:${decision.reason}`];
+    const triggers = [
+      `usd_band:${decision.tier}`,
+      `factor:${decision.factorUsed}`,
+      `reason:${decision.reason}`,
+    ];
     if (decision.floored) triggers.push('floor:clamped');
 
     this.logger.log(
       `Priced "${input.categoryName ?? 'unknown'}" $${input.ethUsd} → ` +
-        `${decision.tier} (${decision.factorUsed}) = ${decision.totalEtb} ETB` +
+        `usd_band ${decision.tier} (${decision.factorUsed}) = ${decision.totalEtb} ETB` +
         (decision.floored ? ' [floor-clamped]' : ''),
     );
 
@@ -163,7 +156,7 @@ export class CalculatorService {
       dubaiCostEtb: decision.dubaiCostEtb,
       sellEtb: decision.sellEtb,
       profitEtb: decision.profitEtb,
-      confidence: decision.tier === 'avg' ? 'medium' : 'estimate',
+      confidence: decision.reason === 'usd_band' ? 'medium' : 'estimate',
       triggers,
     };
   }

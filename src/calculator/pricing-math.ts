@@ -15,7 +15,25 @@ export function resolveDynamicMarginPercent(dubaiCostEtb: number): number {
 }
 
 export type FactorTier = 'low' | 'high' | 'avg';
-export type FactorReason = 'viable' | 'within_ceiling' | 'fallback';
+export type FactorReason =
+  | 'viable'
+  | 'within_ceiling'
+  | 'fallback'
+  | 'usd_band';
+
+/** USD < 10: no Dubai discount (factor 1.0). */
+export const USD_BAND_FACTOR_UNDER_10 = 1.0;
+/**
+ * USD 10–20 inclusive. Calibrated so $10 @ rate 200, delivery 800, ×1.1 → ~3,500 ETB
+ * (reverse-solved ≈ 0.915, rounded up to 0.92).
+ */
+export const USD_BAND_FACTOR_MID = 0.92;
+/** USD > 20. */
+export const USD_BAND_FACTOR_HIGH = 0.82;
+export const USD_BAND_MID_MIN_USD = 10;
+export const USD_BAND_HIGH_MIN_USD = 20;
+
+export type UsdPriceBand = 'under_10' | 'mid' | 'high';
 
 export interface ThreeFactors {
   low: number;
@@ -37,6 +55,17 @@ export interface ThreeFactorDecisionInput {
    * selection, before the floor clamp). Defaults to 1 (no change). Lets admins
    * calibrate the whole price curve without touching factors/margins.
    */
+  finalMultiplier?: number;
+}
+
+/** Order pricing input: Dubai factor comes from USD band only (not category). */
+export interface UsdBandDecisionInput {
+  ethUsd: number;
+  baseAed: number;
+  baseEtbRef: number;
+  deliveryEtb: number;
+  etbToAed: number;
+  quantity: number;
   finalMultiplier?: number;
 }
 
@@ -161,6 +190,68 @@ function finalizeDecision(
     totalEtb: Math.ceil(unitEtbPerUnit * input.quantity),
     floored,
   };
+}
+
+/**
+ * Resolves the single Dubai factor from user USD input (same for all categories).
+ *   • USD < 10        → 1.0 (no Dubai discount)
+ *   • USD 10–20       → 0.92
+ *   • USD > 20        → 0.82
+ */
+export function resolveUsdBandDubaiFactor(ethUsd: number): {
+  factor: number;
+  band: UsdPriceBand;
+  tier: FactorTier;
+} {
+  if (!Number.isFinite(ethUsd) || ethUsd < USD_BAND_MID_MIN_USD) {
+    return {
+      factor: USD_BAND_FACTOR_UNDER_10,
+      band: 'under_10',
+      tier: 'low',
+    };
+  }
+  if (ethUsd <= USD_BAND_HIGH_MIN_USD) {
+    return {
+      factor: USD_BAND_FACTOR_MID,
+      band: 'mid',
+      tier: 'avg',
+    };
+  }
+  return {
+    factor: USD_BAND_FACTOR_HIGH,
+    band: 'high',
+    tier: 'high',
+  };
+}
+
+/**
+ * Order pricing engine: one Dubai factor per USD band (category factors ignored).
+ * Law 1 still applies: margin on Dubai cost only; delivery after; qty last.
+ */
+export function runUsdBandDecision(
+  input: UsdBandDecisionInput,
+): ThreeFactorDecisionResult {
+  const { factor, band, tier } = resolveUsdBandDubaiFactor(input.ethUsd);
+  const deliveryAed = input.deliveryEtb * input.etbToAed;
+  const snapshot = computeStep({
+    factor,
+    baseAed: input.baseAed,
+    baseEtbRef: input.baseEtbRef,
+    deliveryEtb: input.deliveryEtb,
+    deliveryAed,
+    etbToAed: input.etbToAed,
+    quantity: input.quantity,
+  });
+  return finalizeDecision(snapshot, tier, 'usd_band', {
+    baseAed: input.baseAed,
+    baseEtbRef: input.baseEtbRef,
+    deliveryEtb: input.deliveryEtb,
+    etbToAed: input.etbToAed,
+    quantity: input.quantity,
+    factors: { low: factor, avg: factor, high: factor },
+    ceilingMultiplier: 1.2,
+    finalMultiplier: input.finalMultiplier,
+  });
 }
 
 /**
