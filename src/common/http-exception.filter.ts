@@ -34,17 +34,28 @@ export class AllExceptionsFilter implements ExceptionFilter {
   constructor(private readonly fileLogger: FileLoggerService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const ctx = host.switchToHttp();
-    const res = ctx.getResponse<MinimalResponse>();
-    const req = ctx.getRequest<MinimalRequest>();
-    const url = req.originalUrl ?? req.url ?? '';
-
     const status =
       exception instanceof HttpException ? exception.getStatus() : 500;
     const message =
       exception instanceof HttpException
         ? exception.getResponse()
         : { statusCode: 500, message: 'Internal server error' };
+
+    if (host.getType() !== 'http') {
+      this.logger.error(
+        `${host.getType()} -> ${status} ${(exception as Error)?.message || ''}`,
+      );
+      this.fileLogger.logError('http-exception', exception, {
+        context: host.getType(),
+        status,
+      });
+      return;
+    }
+
+    const ctx = host.switchToHttp();
+    const res = ctx.getResponse<MinimalResponse>();
+    const req = ctx.getRequest<MinimalRequest>();
+    const url = req.originalUrl ?? req.url ?? '';
 
     this.logger.error(
       `${req.method} ${url} -> ${status} ${(exception as Error)?.message || ''}`,
@@ -56,8 +67,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ip: req.ip,
     });
 
-    if (!res.headersSent) {
-      res.status(status).json(typeof message === 'string' ? { message } : message);
-    }
+    if (res.headersSent || typeof res.status !== 'function') return;
+
+    res.status(status).json(typeof message === 'string' ? { message } : message);
   }
 }
