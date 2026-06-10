@@ -21,17 +21,19 @@ export type FactorReason =
   | 'fallback'
   | 'usd_band';
 
-/** USD < 10: no Dubai discount (factor 1.0). */
+/** Factor at USD 0 (full Dubai list price). */
 export const USD_BAND_FACTOR_UNDER_10 = 1.0;
 /**
  * USD 10–20 inclusive. Calibrated so $10 @ rate 200, delivery 800, ×1.1 → ~3,500 ETB
  * (reverse-solved ≈ 0.915, rounded up to 0.92).
  */
 export const USD_BAND_FACTOR_MID = 0.92;
-/** USD > 20. */
+/** Factor reached at the top of the high-band ramp (USD ≥ high ramp end). */
 export const USD_BAND_FACTOR_HIGH = 0.82;
 export const USD_BAND_MID_MIN_USD = 10;
 export const USD_BAND_HIGH_MIN_USD = 20;
+/** Linear ramp: factor slides from MID at $20 down to HIGH at this USD (no cliff). */
+export const USD_BAND_HIGH_RAMP_END_USD = 40;
 
 export type UsdPriceBand = 'under_10' | 'mid' | 'high';
 
@@ -193,35 +195,55 @@ function finalizeDecision(
 }
 
 /**
- * Resolves the single Dubai factor from user USD input (same for all categories).
- *   • USD < 10        → 1.0 (no Dubai discount)
- *   • USD 10–20       → 0.92
- *   • USD > 20        → 0.82
+ * Smooth Dubai factor from USD input (same for all categories).
+ *   • USD 0–10   → linear 1.0 → 0.92 (no cliff at $10)
+ *   • USD 10–20  → 0.92 (calibration anchor)
+ *   • USD 20–40  → linear 0.92 → 0.82 (no cliff at $20)
+ *   • USD ≥ 40   → 0.82
  */
 export function resolveUsdBandDubaiFactor(ethUsd: number): {
   factor: number;
   band: UsdPriceBand;
   tier: FactorTier;
 } {
-  if (!Number.isFinite(ethUsd) || ethUsd < USD_BAND_MID_MIN_USD) {
+  if (!Number.isFinite(ethUsd) || ethUsd <= 0) {
     return {
       factor: USD_BAND_FACTOR_UNDER_10,
       band: 'under_10',
       tier: 'low',
     };
   }
-  if (ethUsd <= USD_BAND_HIGH_MIN_USD) {
-    return {
-      factor: USD_BAND_FACTOR_MID,
-      band: 'mid',
-      tier: 'avg',
-    };
+
+  let factor: number;
+  let band: UsdPriceBand;
+  let tier: FactorTier;
+
+  if (ethUsd < USD_BAND_MID_MIN_USD) {
+    const span = USD_BAND_MID_MIN_USD;
+    factor =
+      USD_BAND_FACTOR_UNDER_10 -
+      (ethUsd / span) * (USD_BAND_FACTOR_UNDER_10 - USD_BAND_FACTOR_MID);
+    band = 'under_10';
+    tier = 'low';
+  } else if (ethUsd <= USD_BAND_HIGH_MIN_USD) {
+    factor = USD_BAND_FACTOR_MID;
+    band = 'mid';
+    tier = 'avg';
+  } else if (ethUsd < USD_BAND_HIGH_RAMP_END_USD) {
+    const span = USD_BAND_HIGH_RAMP_END_USD - USD_BAND_HIGH_MIN_USD;
+    factor =
+      USD_BAND_FACTOR_MID -
+      ((ethUsd - USD_BAND_HIGH_MIN_USD) / span) *
+        (USD_BAND_FACTOR_MID - USD_BAND_FACTOR_HIGH);
+    band = 'high';
+    tier = 'high';
+  } else {
+    factor = USD_BAND_FACTOR_HIGH;
+    band = 'high';
+    tier = 'high';
   }
-  return {
-    factor: USD_BAND_FACTOR_HIGH,
-    band: 'high',
-    tier: 'high',
-  };
+
+  return { factor, band, tier };
 }
 
 /**

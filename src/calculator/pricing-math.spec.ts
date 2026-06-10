@@ -26,11 +26,15 @@ describe('resolveDynamicMarginPercent', () => {
 });
 
 describe('resolveUsdBandDubaiFactor', () => {
-  it('uses factor 1.0 below $10', () => {
-    const r = resolveUsdBandDubaiFactor(9.99);
-    assert.equal(r.factor, USD_BAND_FACTOR_UNDER_10);
-    assert.equal(r.band, 'under_10');
-    assert.equal(r.tier, 'low');
+  it('ramps factor from 1.0 toward 0.92 below $10', () => {
+    const low = resolveUsdBandDubaiFactor(5);
+    assert.equal(low.band, 'under_10');
+    assert.equal(low.tier, 'low');
+    assert.ok(low.factor > USD_BAND_FACTOR_MID);
+    assert.ok(low.factor < USD_BAND_FACTOR_UNDER_10);
+
+    const nearTen = resolveUsdBandDubaiFactor(9.99);
+    assert.ok(Math.abs(nearTen.factor - USD_BAND_FACTOR_MID) < 0.01);
   });
 
   it('uses factor 0.92 from $10 through $20', () => {
@@ -42,11 +46,16 @@ describe('resolveUsdBandDubaiFactor', () => {
     }
   });
 
-  it('uses factor 0.82 above $20', () => {
-    const r = resolveUsdBandDubaiFactor(20.01);
-    assert.equal(r.factor, USD_BAND_FACTOR_HIGH);
-    assert.equal(r.band, 'high');
-    assert.equal(r.tier, 'high');
+  it('ramps factor between 0.92 and 0.82 from $20 to $40', () => {
+    const justAbove = resolveUsdBandDubaiFactor(20.01);
+    assert.equal(justAbove.band, 'high');
+    assert.equal(justAbove.tier, 'high');
+    assert.ok(justAbove.factor > USD_BAND_FACTOR_HIGH);
+    assert.ok(justAbove.factor < USD_BAND_FACTOR_MID);
+
+    const atEnd = resolveUsdBandDubaiFactor(40);
+    assert.equal(atEnd.factor, USD_BAND_FACTOR_HIGH);
+    assert.equal(atEnd.band, 'high');
   });
 });
 
@@ -85,9 +94,18 @@ describe('runUsdBandDecision', () => {
   it('picks band-specific factors for $8 vs $12', () => {
     const under10 = bandPrice(8);
     const mid = bandPrice(12);
-    assert.equal(under10.factorUsed, USD_BAND_FACTOR_UNDER_10);
+    assert.ok(under10.factorUsed > USD_BAND_FACTOR_MID);
     assert.equal(mid.factorUsed, USD_BAND_FACTOR_MID);
     assert.notEqual(under10.factorUsed, mid.factorUsed);
+  });
+
+  it('keeps total price increasing across the $20 band boundary', () => {
+    const at18 = bandPrice(18);
+    const at20 = bandPrice(20);
+    const at22 = bandPrice(22);
+    assert.ok(at18.totalEtb < at20.totalEtb);
+    assert.ok(at20.totalEtb < at22.totalEtb);
+    assert.ok(at18.totalEtb < at22.totalEtb);
   });
 });
 
