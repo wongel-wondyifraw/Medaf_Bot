@@ -8,8 +8,7 @@ import type { PriceConfidence } from '../observations/observations.service';
 const STATE_TTL_MS = 30 * 60 * 1000;
 
 export type DraftStep =
-  | 'size'
-  | 'color'
+  | 'preferences'
   | 'qty'
   | 'qty-input'
   | 'price'
@@ -21,6 +20,8 @@ export interface OrderDraft {
   productTitle: string;
   sizes: string[];
   colors: string[];
+  /** Free-text size, color, and other variant preferences from the user. */
+  preferencesText: string | null;
   selectedSize: string | null;
   selectedColor: string | null;
   quantity: number;
@@ -126,14 +127,13 @@ export class OrderDraftStateService {
   private readonly drafts = new Map<number, OrderDraft>();
 
   setDraft(userId: number, input: CreateDraftInput): OrderDraft {
-    const step: DraftStep =
-      input.sizes.length > 0 ? 'size' : input.colors.length > 0 ? 'color' : 'qty';
     const draft: OrderDraft = {
       productId: input.productId,
       link: input.link,
       productTitle: input.productTitle,
       sizes: input.sizes,
       colors: input.colors,
+      preferencesText: null,
       selectedSize: null,
       selectedColor: null,
       quantity: 1,
@@ -159,10 +159,21 @@ export class OrderDraftStateService {
       usdToAed: null,
       confidence: null,
       triggers: [],
-      step,
+      step: 'preferences',
       since: Date.now(),
     };
     this.drafts.set(userId, draft);
+    return draft;
+  }
+
+  setPreferences(userId: number, preferencesText: string): OrderDraft | null {
+    const draft = this.getDraft(userId);
+    if (!draft || draft.step !== 'preferences') return null;
+    draft.preferencesText = preferencesText;
+    draft.selectedSize = preferencesText;
+    draft.selectedColor = null;
+    draft.step = 'qty';
+    draft.since = Date.now();
     return draft;
   }
 
@@ -178,24 +189,6 @@ export class OrderDraftStateService {
 
   clearDraft(userId: number): void {
     this.drafts.delete(userId);
-  }
-
-  selectSize(userId: number, size: string): OrderDraft | null {
-    const draft = this.getDraft(userId);
-    if (!draft) return null;
-    draft.selectedSize = size;
-    draft.step = draft.colors.length > 0 ? 'color' : 'qty';
-    draft.since = Date.now();
-    return draft;
-  }
-
-  selectColor(userId: number, color: string): OrderDraft | null {
-    const draft = this.getDraft(userId);
-    if (!draft) return null;
-    draft.selectedColor = color;
-    draft.step = 'qty';
-    draft.since = Date.now();
-    return draft;
   }
 
   selectQuantity(userId: number, quantity: number): OrderDraft | null {

@@ -32,10 +32,8 @@ import { ResellersService } from '../resellers/resellers.service';
 import { LinkResolverService } from '../scraper/link-resolver.service';
 import { SharePreviewService } from '../scraper/share-preview.service';
 import {
-  DEFAULT_CLOTHING_SIZES,
   extractFreeText,
   extractSlugTitle,
-  isClothingTitle,
 } from '../scraper/manual-order.utils';
 import { ObservationsService } from '../observations/observations.service';
 import { ScraperService } from '../scraper/scraper.service';
@@ -304,6 +302,10 @@ export class BotUpdate {
     // the user (custom quantity, unit USD price) is dispatched here before
     // any of the registration / SHEIN-link checks below.
     const activeDraft = this.orderDraft.getDraft(from.id);
+    if (activeDraft && activeDraft.step === 'preferences') {
+      await this.handleOrderPreferencesInput(ctx, from.id, text);
+      return;
+    }
     if (activeDraft && activeDraft.step === 'qty-input') {
       await this.handleOrderQuantityInput(ctx, from.id, text);
       return;
@@ -371,13 +373,9 @@ export class BotUpdate {
 
     const freeText = extractFreeText(rawMessage);
     const slugTitle = extractSlugTitle(url);
-    const needsFetch = (!freeText || freeText.length < 4) && !slugTitle;
 
-    const fetched = needsFetch ? await this.sharePreview.tryFetch(url) : null;
-
-    if (!needsFetch) {
-      await this.simulateScrapeDelay();
-    }
+    const fetched = await this.sharePreview.tryFetch(url);
+    await this.simulateScrapeDelay();
 
     const resolvedProductId = productId ?? fetched?.productId ?? null;
     const productTitle =
@@ -385,8 +383,6 @@ export class BotUpdate {
       fetched?.title ??
       slugTitle ??
       (resolvedProductId ? `SHEIN product ${resolvedProductId}` : 'SHEIN product');
-
-    const sizes = isClothingTitle(productTitle) ? [...DEFAULT_CLOTHING_SIZES] : [];
 
     const linkContext = buildCategoryLinkContext({
       title: productTitle,
@@ -423,7 +419,7 @@ export class BotUpdate {
       productId: resolvedProductId,
       domain: this.safeHostname(url),
       source: 'manual',
-      sizes,
+      sizes: [],
       colors: [],
       breadcrumb: category ? [category.name] : [],
     };
@@ -436,7 +432,7 @@ export class BotUpdate {
       productId: resolvedProductId,
       link: url,
       productTitle,
-      sizes,
+      sizes: [],
       colors: [],
       scrapedUnitUsd: null,
       unitEtb: 0,
@@ -450,8 +446,7 @@ export class BotUpdate {
 
     this.logger.log(
       `Manual draft for telegramId=${userId} title="${productTitle.slice(0, 60)}" ` +
-        `category="${category?.name ?? 'default'}" source=${categoryOutcome.source} ` +
-        `clothing=${sizes.length > 0}`,
+        `category="${category?.name ?? 'default'}" source=${categoryOutcome.source}`,
     );
 
     await ctx.reply(this.buildDraftMessage(draft), {
@@ -518,50 +513,6 @@ export class BotUpdate {
     if (process.env.NODE_ENV === 'test') return Promise.resolve();
     const ms = 1200 + Math.floor(Math.random() * 600); // 1.2s–1.8s
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  @Action(/^ord:size:(\d+)$/)
-  async onOrderPickSize(@Ctx() ctx: Context) {
-    const from = ctx.from;
-    if (!from) return;
-    const draft = this.orderDraft.getDraft(from.id);
-    if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
-      return;
-    }
-    const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const idx = parseInt(match?.[1] || '-1', 10);
-    const size = draft.sizes[idx];
-    if (!size) {
-      await this.safeAnswer(ctx, 'Invalid size selection.', true);
-      return;
-    }
-    const updated = this.orderDraft.selectSize(from.id, size);
-    if (!updated) return;
-    await this.safeAnswer(ctx, `Size: ${size}`, false);
-    await this.editDraftMessage(ctx, updated);
-  }
-
-  @Action(/^ord:color:(\d+)$/)
-  async onOrderPickColor(@Ctx() ctx: Context) {
-    const from = ctx.from;
-    if (!from) return;
-    const draft = this.orderDraft.getDraft(from.id);
-    if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
-      return;
-    }
-    const match = (ctx as Context & { match?: RegExpExecArray }).match;
-    const idx = parseInt(match?.[1] || '-1', 10);
-    const color = draft.colors[idx];
-    if (!color) {
-      await this.safeAnswer(ctx, 'Invalid color selection.', true);
-      return;
-    }
-    const updated = this.orderDraft.selectColor(from.id, color);
-    if (!updated) return;
-    await this.safeAnswer(ctx, `Color: ${color}`, false);
-    await this.editDraftMessage(ctx, updated);
   }
 
   @Action(/^ord:qty:(\d+)$/)
@@ -1932,6 +1883,38 @@ export class BotUpdate {
     await ctx.reply(this.buildCategoriesMessage(list), {
       parse_mode: 'HTML',
       ...this.categoriesKeyboard(list),
+    });
+  }
+
+  private async handleOrderPreferencesInput(
+    ctx: Context,
+    userId: number,
+    text: string,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed.toLowerCase() === 'cancel') {
+      this.orderDraft.clearDraft(userId);
+      await ctx.reply('Order cancelled.');
+      return;
+    }
+    if (trimmed.length < 1 || trimmed.length > 200) {
+      await ctx.reply(
+        'Please enter your preferences in one message (1–200 characters), e.g. ' +
+          '<code>Size M, Black</code>.',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const updated = this.orderDraft.setPreferences(userId, trimmed);
+    if (!updated) {
+      await ctx.reply('Order session expired. Send the link again.');
+      return;
+    }
+
+    await ctx.reply(this.buildDraftMessage(updated), {
+      parse_mode: 'HTML',
+      ...this.buildDraftKeyboard(updated),
     });
   }
 
@@ -3732,16 +3715,13 @@ export class BotUpdate {
       ? this.escapeHtml(draft.categoryName)
       : 'N/A';
     const lines: string[] = [
-      `Product : <b>${this.escapeHtml(draft.productTitle)}</b>`,
-      `Category : <b>${categoryDisplay}</b>`,
+      '🛍️ <b>' + this.escapeHtml(draft.productTitle) + '</b>',
+      `Category: <b>${categoryDisplay}</b>`,
       '',
     ];
 
-    if (draft.selectedSize) {
-      lines.push(`Size: <b>${this.escapeHtml(draft.selectedSize)}</b>`);
-    }
-    if (draft.selectedColor) {
-      lines.push(`Color: <b>${this.escapeHtml(draft.selectedColor)}</b>`);
+    if (draft.preferencesText) {
+      lines.push(`Preferences: <b>${this.escapeHtml(draft.preferencesText)}</b>`);
     }
     if (draft.step === 'qty' || draft.step === 'price' || draft.step === 'confirm') {
       lines.push(`Quantity: <b>${draft.quantity}</b>`);
@@ -3761,10 +3741,8 @@ export class BotUpdate {
 
   private draftStepHint(draft: OrderDraft): string {
     switch (draft.step) {
-      case 'size':
-        return 'Choose a size to continue.';
-      case 'color':
-        return 'Choose a color to continue.';
+      case 'preferences':
+        return 'Reply with your preferences (size, color, etc.) — e.g. Size M, Black.';
       case 'qty':
         return 'Choose a quantity, or tap "➕ More" to enter your own.';
       case 'qty-input':
@@ -3783,25 +3761,8 @@ export class BotUpdate {
   }
 
   private buildDraftKeyboard(draft: OrderDraft) {
-    if (draft.step === 'size') {
+    if (draft.step === 'preferences') {
       return Markup.inlineKeyboard([
-        ...this.chunkButtons(
-          draft.sizes.map((s, i) =>
-            Markup.button.callback(s.slice(0, 24), `ord:size:${i}`),
-          ),
-          4,
-        ),
-        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
-      ]);
-    }
-    if (draft.step === 'color') {
-      return Markup.inlineKeyboard([
-        ...this.chunkButtons(
-          draft.colors.map((c, i) =>
-            Markup.button.callback(c.slice(0, 24), `ord:color:${i}`),
-          ),
-          3,
-        ),
         [Markup.button.callback('✗ Cancel', 'ord:cancel')],
       ]);
     }
