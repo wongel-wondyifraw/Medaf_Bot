@@ -45,6 +45,7 @@ export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
   private readonly myOrdersButtonLabel = '📋 My orders';
   private readonly updateButtonLabel = '🔄 Update';
+  private readonly pendingOrdersButtonLabel = '✅ Pending orders';
 
   constructor(
     @InjectBot() private readonly bot: Telegraf,
@@ -149,7 +150,10 @@ export class BotUpdate {
       '👀 <i>Below is exactly what registered users will receive:</i>',
       { parse_mode: 'HTML' },
     );
-    await ctx.reply(body, { parse_mode: 'HTML', ...this.stickyUserReplyKeyboard(true) });
+    await ctx.reply(body, {
+      parse_mode: 'HTML',
+      ...(await this.stickyReplyKeyboardFor(from.id, true)),
+    });
     await ctx.reply(
       `📤 Send this v2.0 release note to <b>${counts.total}</b> people?\n` +
         `<i>(${counts.registeredResellers} registered resellers + ${counts.admins} admins, duplicates removed)</i>`,
@@ -197,7 +201,7 @@ export class BotUpdate {
       try {
         await this.bot.telegram.sendMessage(telegramId, body, {
           parse_mode: 'HTML',
-          ...this.stickyUserReplyKeyboard(true),
+          ...(await this.stickyReplyKeyboardFor(telegramId, true)),
         });
         sent++;
       } catch (err) {
@@ -271,7 +275,7 @@ export class BotUpdate {
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
       'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
-      this.stickyUserReplyKeyboard(),
+      await this.stickyReplyKeyboardFor(from.id),
     );
   }
 
@@ -289,6 +293,15 @@ export class BotUpdate {
 
     if (text === this.updateButtonLabel) {
       await this.handleUserStart(ctx, true);
+      return;
+    }
+
+    if (text === this.pendingOrdersButtonLabel) {
+      if (!(await this.admins.isAdmin(from.id))) {
+        await ctx.reply('Admin access required. Send /admin first.');
+        return;
+      }
+      await this.replyAdminApprovalQueue(ctx);
       return;
     }
 
@@ -2537,12 +2550,34 @@ export class BotUpdate {
     return ids;
   }
 
-  /** @param includeUpdate Show one-time Update button (release broadcast); hidden after user taps it. */
-  private stickyUserReplyKeyboard(includeUpdate = false) {
-    const row = includeUpdate
+  private buildStickyReplyKeyboard(opts: { includeUpdate?: boolean; isAdmin?: boolean }) {
+    const row1 = opts.includeUpdate
       ? [this.updateButtonLabel, this.myOrdersButtonLabel]
       : [this.myOrdersButtonLabel];
-    return Markup.keyboard([row]).resize().persistent();
+    const rows: string[][] = [row1];
+    if (opts.isAdmin) {
+      rows.push([this.pendingOrdersButtonLabel]);
+    }
+    return Markup.keyboard(rows).resize().persistent();
+  }
+
+  private async stickyReplyKeyboardFor(
+    telegramId: number | string | undefined,
+    includeUpdate = false,
+  ) {
+    const isAdmin =
+      telegramId != null && (await this.admins.isAdmin(telegramId));
+    return this.buildStickyReplyKeyboard({ includeUpdate, isAdmin });
+  }
+
+  private async replyAdminApprovalQueue(ctx: Context): Promise<void> {
+    const awaiting = await this.orders.findAwaitingApproval();
+    const from = ctx.from;
+    await ctx.reply(this.buildApprovalMessage(awaiting), {
+      parse_mode: 'HTML',
+      ...this.approvalKeyboard(awaiting),
+      ...(await this.stickyReplyKeyboardFor(from?.id)),
+    });
   }
 
   private async handleUserStart(ctx: Context, refreshed: boolean): Promise<void> {
@@ -2559,7 +2594,7 @@ export class BotUpdate {
         : 'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.';
       await ctx.reply(intro, {
         parse_mode: refreshed ? 'HTML' : undefined,
-        ...this.stickyUserReplyKeyboard(),
+        ...(await this.stickyReplyKeyboardFor(from?.id)),
       });
       return;
     }
@@ -2570,7 +2605,7 @@ export class BotUpdate {
     } else {
       await ctx.reply(
         'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
-        this.stickyUserReplyKeyboard(),
+        await this.stickyReplyKeyboardFor(from?.id),
       );
     }
   }
@@ -2588,7 +2623,7 @@ export class BotUpdate {
     const orders = await this.orders.findByResellerId(reseller.id);
     await ctx.reply(this.buildMyOrdersMessage(orders), {
       parse_mode: 'HTML',
-      ...this.stickyUserReplyKeyboard(),
+      ...(await this.stickyReplyKeyboardFor(from.id)),
     });
   }
 
@@ -2648,6 +2683,15 @@ export class BotUpdate {
       parse_mode: 'HTML',
       ...this.adminMenuKeyboard(from?.id),
     });
+    if (from) {
+      await ctx.reply(
+        'Admin shortcut: tap <b>Pending orders</b> on the bottom bar anytime.',
+        {
+          parse_mode: 'HTML',
+          ...(await this.stickyReplyKeyboardFor(from.id)),
+        },
+      );
+    }
   }
 
   private adminMenuKeyboard(telegramId?: number) {
