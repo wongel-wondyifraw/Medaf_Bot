@@ -2572,11 +2572,9 @@ export class BotUpdate {
 
   private async replyAdminDeliveryQueue(ctx: Context): Promise<void> {
     const pending = await this.orders.findPending();
-    const from = ctx.from;
     await ctx.reply(this.buildPendingMessage(pending), {
       parse_mode: 'HTML',
       ...this.pendingKeyboard(pending),
-      ...(await this.stickyReplyKeyboardFor(from?.id)),
     });
   }
 
