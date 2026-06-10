@@ -105,8 +105,8 @@ export class BotUpdate {
     if (!reseller) return;
     if (reseller.isRegistered()) {
       await ctx.reply(
-        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.\n\nUse /myorders to see your order history.',
-        Markup.removeKeyboard(),
+        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
+        this.myOrdersKeyboard(),
       );
       return;
     }
@@ -143,17 +143,13 @@ export class BotUpdate {
 
   @Command('myorders')
   async onMyOrders(@Ctx() ctx: Context) {
-    const from = ctx.from;
-    if (!from) return;
+    await this.replyMyOrders(ctx);
+  }
 
-    const reseller = await this.resellers.findByTelegramId(from.id);
-    if (!reseller?.isRegistered()) {
-      await ctx.reply('Please complete registration with /start before viewing orders.');
-      return;
-    }
-
-    const orders = await this.orders.findByResellerId(reseller.id);
-    await ctx.reply(this.buildMyOrdersMessage(orders), { parse_mode: 'HTML' });
+  @Action('user:myorders')
+  async onMyOrdersButton(@Ctx() ctx: Context) {
+    await this.safeAnswer(ctx, '', false);
+    await this.replyMyOrders(ctx);
   }
 
   @Command('release')
@@ -172,7 +168,7 @@ export class BotUpdate {
       '👀 <i>Below is exactly what registered users will receive:</i>',
       { parse_mode: 'HTML' },
     );
-    await ctx.reply(body, { parse_mode: 'HTML' });
+    await ctx.reply(body, { parse_mode: 'HTML', ...this.myOrdersKeyboard() });
     await ctx.reply(
       `📤 Send this v2.0 release note to <b>${counts.total}</b> people?\n` +
         `<i>(${counts.registeredResellers} registered resellers + ${counts.admins} admins, duplicates removed)</i>`,
@@ -218,7 +214,10 @@ export class BotUpdate {
 
     for (const telegramId of recipientIds) {
       try {
-        await this.bot.telegram.sendMessage(telegramId, body, { parse_mode: 'HTML' });
+        await this.bot.telegram.sendMessage(telegramId, body, {
+          parse_mode: 'HTML',
+          ...this.myOrdersKeyboard(),
+        });
         sent++;
       } catch (err) {
         failed++;
@@ -290,8 +289,8 @@ export class BotUpdate {
 
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
-      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.\n\nUse /myorders to see your order history.',
-      Markup.removeKeyboard(),
+      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
+      this.myOrdersKeyboard(),
     );
   }
 
@@ -2527,7 +2526,7 @@ export class BotUpdate {
       'After approval, transfer <b>50%</b> to our bank account and tap <b>✅ Paid</b> in the bot. Your order is confirmed right away.',
       '',
       '📋 <b>See your orders</b>',
-      'Check all your orders and their status anytime — just type <code>/myorders</code>',
+      'Check all your orders and their status anytime — tap <b>My orders</b> below.',
       '',
       '━━━━━━━━━━━━━━━━',
       '',
@@ -2557,6 +2556,29 @@ export class BotUpdate {
     for (const r of registered) ids.add(r.telegramId);
     for (const a of adminList) ids.add(a.telegramId);
     return ids;
+  }
+
+  private myOrdersKeyboard() {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('📋 My orders', 'user:myorders')],
+    ]);
+  }
+
+  private async replyMyOrders(ctx: Context): Promise<void> {
+    const from = ctx.from;
+    if (!from) return;
+
+    const reseller = await this.resellers.findByTelegramId(from.id);
+    if (!reseller?.isRegistered()) {
+      await ctx.reply('Please complete registration with /start before viewing orders.');
+      return;
+    }
+
+    const orders = await this.orders.findByResellerId(reseller.id);
+    await ctx.reply(this.buildMyOrdersMessage(orders), {
+      parse_mode: 'HTML',
+      ...this.myOrdersKeyboard(),
+    });
   }
 
   private buildMyOrdersMessage(orders: Order[]): string {
