@@ -15,6 +15,11 @@ import { OrdersModule } from '../orders/orders.module';
     AddPriceStateService,
     AdminNotificationsService,
   ],
-  exports: [AdminsService, AdminAuthStateService, AddPriceStateService],
+  exports: [
+    AdminsService,
+    AdminAuthStateService,
+    AddPriceStateService,
+    AdminNotificationsService,
+  ],
 })
 export class AdminsModule {}

@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 import { formatGmtPlus3 } from '../common/date-format';
+import { Order } from '../orders/order.entity';
 import { OrdersService } from '../orders/orders.service';
 import { AdminsService } from './admins.service';
 
@@ -16,6 +17,26 @@ export class AdminNotificationsService {
     private readonly orders: OrdersService,
   ) {}
 
+  async notifyAdminsNewOrder(order: Order): Promise<void> {
+    const allAdmins = await this.admins.findAll();
+    if (allAdmins.length === 0) return;
+
+    const full = await this.orders.findByIdWithReseller(order.id);
+    if (!full) return;
+
+    const message = this.formatNewOrderAlert(full);
+    for (const admin of allAdmins) {
+      try {
+        await this.bot.telegram.sendMessage(admin.telegramId, message, {
+          parse_mode: 'HTML',
+        });
+      } catch (err) {
+        const e = err as Error;
+        this.logger.error(`Failed to alert admin ${admin.id} about order #${order.id}: ${e.message}`);
+      }
+    }
+  }
+
   @Cron('0 0 */6 * * *', { name: 'admin-order-digest' })
   async notifyAdmins(): Promise<void> {
     const allAdmins = await this.admins.findAll();
@@ -28,10 +49,12 @@ export class AdminNotificationsService {
     for (const admin of allAdmins) {
       try {
         const since = admin.lastNotifiedAt || admin.addedAt;
-        const newOrders = await this.orders.findCreatedSince(since, 'pending');
+        const newOrders = await this.orders.findCreatedSinceWithStatuses(since, [
+          'awaiting_approval',
+        ]);
         if (newOrders.length === 0) {
           this.logger.debug(
-            `No new pending orders for admin ${admin.id} since ${since.toISOString()}.`,
+            `No new orders awaiting approval for admin ${admin.id} since ${since.toISOString()}.`,
           );
           await this.admins.updateLastNotified(admin.id, now);
           continue;
@@ -43,7 +66,7 @@ export class AdminNotificationsService {
         });
         await this.admins.updateLastNotified(admin.id, now);
         this.logger.log(
-          `Sent ${newOrders.length} new pending order(s) digest to admin ${admin.id}.`,
+          `Sent ${newOrders.length} new order(s) awaiting approval to admin ${admin.id}.`,
         );
       } catch (err) {
         const e = err as Error;
@@ -52,10 +75,40 @@ export class AdminNotificationsService {
     }
   }
 
+  private formatNewOrderAlert(
+    order: Awaited<ReturnType<OrdersService['findByIdWithReseller']>>,
+  ): string {
+    if (!order) return '';
+    const r = order.reseller;
+    const name = this.escapeHtml(r?.fullName || 'unknown');
+    const phone = this.escapeHtml(r?.phoneNumber || '');
+    const title = this.escapeHtml((order.productTitle || '').slice(0, 60));
+    const total = order.sellingEtb.toLocaleString('en-US');
+    const priceBase =
+      order.quantity > 1 && order.unitEtb
+        ? `${order.unitEtb.toLocaleString('en-US')} × ${order.quantity} = ${total} ETB`
+        : `${total} ETB`;
+    const usdTail = this.formatUsdTail(order);
+    const priceLine = usdTail ? `${priceBase} ${usdTail}` : priceBase;
+
+    const lines = [
+      `<b>🆕 New order awaiting approval #${order.id}</b>`,
+      '',
+      `<b>${title}</b> — ${priceLine}`,
+      `Submitted: ${this.escapeHtml(formatGmtPlus3(order.createdAt))}`,
+      `By: ${name}${phone ? ' (' + phone + ')' : ''}`,
+    ];
+    if (order.link) {
+      lines.push(`<a href="${this.escapeHtml(order.link)}">View product</a>`);
+    }
+    lines.push('', '<i>Open Admin → Awaiting approval to review.</i>');
+    return lines.join('\n');
+  }
+
   private formatDigest(since: Date, orders: Awaited<ReturnType<OrdersService['findCreatedSince']>>): string {
     const sinceStr = formatGmtPlus3(since);
     const lines: string[] = [
-      `<b>📦 ${orders.length} new pending order(s) since ${this.escapeHtml(sinceStr)}</b>`,
+      `<b>📦 ${orders.length} new order(s) awaiting approval since ${this.escapeHtml(sinceStr)}</b>`,
       '',
     ];
     const previewLimit = 15;
@@ -83,7 +136,7 @@ export class AdminNotificationsService {
         : null;
 
       lines.push(`${statusTag} <b>#${o.id}</b> ${title} — ${priceLine}`);
-      lines.push(`   Placed: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
+      lines.push(`   Submitted: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
       if (variant) lines.push(`   ${variant}`);
       lines.push(`   by ${name}${phone ? ' (' + phone + ')' : ''}`);
       if (o.link) {
@@ -93,6 +146,7 @@ export class AdminNotificationsService {
     if (orders.length > previewLimit) {
       lines.push('', `…and ${orders.length - previewLimit} more.`);
     }
+    lines.push('', '<i>Open Admin → Awaiting approval to review.</i>');
     return lines.join('\n');
   }
 

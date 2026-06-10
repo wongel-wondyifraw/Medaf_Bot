@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Action, Command, Ctx, InjectBot, On, Start, Update } from 'nestjs-telegraf';
 import { Context, Markup, Telegraf } from 'telegraf';
 import { AdminsService } from '../admins/admins.service';
+import { AdminNotificationsService } from '../admins/admin-notifications.service';
 import { AddPriceStateService } from '../admins/add-price-state.service';
 import {
   AdminAuthStateService,
@@ -20,7 +21,7 @@ import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
 import { HealthNotificationsService } from '../health/health-notifications.service';
 import { HealthReportService } from '../health/health-report.service';
-import { OrdersService } from '../orders/orders.service';
+import { OrdersService, computeDownPaymentEtb } from '../orders/orders.service';
 import { Order } from '../orders/order.entity';
 import {
   OrderDraft,
@@ -50,6 +51,7 @@ export class BotUpdate {
     private readonly orders: OrdersService,
     private readonly orderDraft: OrderDraftStateService,
     private readonly admins: AdminsService,
+    private readonly adminNotifications: AdminNotificationsService,
     private readonly adminAuth: AdminAuthStateService,
     private readonly scraper: ScraperService,
     private readonly linkResolver: LinkResolverService,
@@ -625,12 +627,13 @@ export class BotUpdate {
           `scrapedUsd=${draft.scrapedUnitUsd ?? '-'} userUsd=${draft.userUnitUsd ?? '-'}`,
       );
 
-      const summary = this.buildDraftMessage(draft) + '\n\n⏳ Order placed — awaiting confirmation';
+      const summary =
+        this.buildDraftMessage(draft) + '\n\n⏳ Submitted — awaiting admin approval';
       try {
         await ctx.editMessageText(summary, {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
-            Markup.button.callback('❌ Cancel order', `cancel:${order.id}`),
+            Markup.button.callback('❌ Cancel request', `cancel:${order.id}`),
           ]),
         });
       } catch (err) {
@@ -638,7 +641,8 @@ export class BotUpdate {
           this.fileLogger.logError('orderConfirmEdit', err);
         }
       }
-      await this.safeAnswer(ctx, 'Order received! We will contact you shortly.', false);
+      await this.adminNotifications.notifyAdminsNewOrder(order);
+      await this.safeAnswer(ctx, 'Request submitted! We will review it shortly.', false);
     } catch (err) {
       this.fileLogger.logError('orderConfirm', err, { draft });
       await this.safeAnswer(ctx, 'Could not save your order. Please try again.', true);
@@ -676,6 +680,21 @@ export class BotUpdate {
         return;
       }
 
+      if (order.status === 'completed') {
+        await this.safeAnswer(ctx, 'This order was already completed.', true);
+        return;
+      }
+
+      if (order.status === 'pending') {
+        await this.safeAnswer(ctx, 'This order is already confirmed and cannot be cancelled here.', true);
+        return;
+      }
+
+      if (order.status !== 'awaiting_approval' && order.status !== 'awaiting_payment') {
+        await this.safeAnswer(ctx, 'This order cannot be cancelled.', true);
+        return;
+      }
+
       await this.orders.cancel(orderId);
       this.logger.log(`Order #${orderId} cancelled by reseller ${reseller.id}`);
 
@@ -684,6 +703,73 @@ export class BotUpdate {
     } catch (err) {
       this.fileLogger.logError('cancel', err, { orderId });
       await this.safeAnswer(ctx, 'Could not cancel your order. Please try again.', true);
+    }
+  }
+
+  @Action(/^pay:confirm:(\d+)$/)
+  async onPaymentConfirm(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+
+      const reseller = await this.resellers.findByTelegramId(from.id);
+      if (!reseller || reseller.id !== order.resellerId) {
+        await this.safeAnswer(ctx, 'You can only confirm your own orders.', true);
+        return;
+      }
+
+      if (order.status === 'pending' || order.status === 'completed') {
+        await this.replaceStatusAndRemoveButtons(ctx, '✓ Payment confirmed — order placed');
+        await this.safeAnswer(ctx, 'Payment was already confirmed.', false);
+        return;
+      }
+
+      if (order.status === 'cancelled') {
+        await this.safeAnswer(ctx, 'This order was cancelled.', true);
+        return;
+      }
+
+      if (order.status !== 'awaiting_payment') {
+        await this.safeAnswer(ctx, 'This order is not awaiting payment.', true);
+        return;
+      }
+
+      const updated = await this.orders.confirmPayment(orderId);
+      if (!updated) {
+        await this.safeAnswer(ctx, 'Could not confirm payment. Please try again.', true);
+        return;
+      }
+
+      this.logger.log(`Order #${orderId} payment confirmed by reseller ${reseller.id}`);
+
+      try {
+        await ctx.editMessageText(
+          this.buildPaymentConfirmedMessage(updated) +
+            '\n\n✓ Order placed — Medaf collation will process your order',
+          { parse_mode: 'HTML' },
+        );
+      } catch (err) {
+        if (!this.isMessageNotModifiedError(err)) {
+          this.fileLogger.logError('paymentConfirmEdit', err);
+        }
+      }
+      await this.safeAnswer(ctx, 'Order placed!', false);
+    } catch (err) {
+      this.fileLogger.logError('paymentConfirm', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not confirm payment. Please try again.', true);
     }
   }
 
@@ -737,6 +823,16 @@ export class BotUpdate {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('adminSettings', err);
     }
+  }
+
+  @Action('admin:edit:bank-account')
+  async onEditBankAccount(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-bank-account');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter the bank account number or payment details for down payments:');
   }
 
   @Action('admin:edit:delivery')
@@ -901,7 +997,7 @@ export class BotUpdate {
   @Action('admin:pending')
   async onAdminPending(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
-    await this.safeAnswer(ctx, 'Loading pending orders...', false);
+    await this.safeAnswer(ctx, 'Loading delivery queue...', false);
     try {
       const pending = await this.orders.findPending();
       await ctx.editMessageText(this.buildPendingMessage(pending), {
@@ -912,6 +1008,132 @@ export class BotUpdate {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('adminPending', err);
     }
+  }
+
+  @Action('admin:approval')
+  async onAdminApproval(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Loading approval queue...', false);
+    try {
+      const awaiting = await this.orders.findAwaitingApproval();
+      await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
+        parse_mode: 'HTML',
+        ...this.approvalKeyboard(awaiting),
+      });
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminApproval', err);
+    }
+  }
+
+  @Action(/^admin:approve:(\d+)$/)
+  async onAdminApprove(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    const bankAccount = await this.getPaymentBankAccount();
+    if (!bankAccount) {
+      await this.safeAnswer(
+        ctx,
+        'Set the payment bank account in Settings before approving orders.',
+        true,
+      );
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+      if (order.status === 'awaiting_payment') {
+        await this.safeAnswer(ctx, `Order #${orderId} is already approved.`, false);
+        return;
+      }
+      if (order.status !== 'awaiting_approval') {
+        await this.safeAnswer(ctx, 'This order is not awaiting approval.', true);
+        return;
+      }
+
+      const updated = await this.orders.approve(orderId);
+      if (!updated) {
+        await this.safeAnswer(ctx, 'Could not approve order.', true);
+        return;
+      }
+
+      const from = ctx.from;
+      this.logger.log(`Order #${orderId} approved by admin telegramId=${from?.id}`);
+      await this.sendPaymentRequestToReseller(updated, bankAccount, false);
+      await this.safeAnswer(ctx, `✓ Order #${orderId} approved.`, false);
+
+      const awaiting = await this.orders.findAwaitingApproval();
+      try {
+        await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
+          parse_mode: 'HTML',
+          ...this.approvalKeyboard(awaiting),
+        });
+      } catch (err) {
+        if (this.isMessageNotModifiedError(err)) return;
+        throw err;
+      }
+    } catch (err) {
+      this.fileLogger.logError('adminApprove', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not approve order. Please try again.', true);
+    }
+  }
+
+  @Action(/^admin:adjust:(\d+)$/)
+  async onAdminAdjustPrice(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    const order = await this.orders.findById(orderId);
+    if (!order || order.status !== 'awaiting_approval') {
+      await this.safeAnswer(ctx, 'Order not found or not awaiting approval.', true);
+      return;
+    }
+
+    this.adminAuth.setPendingForOrder(from.id, 'adjust-price', orderId);
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(
+      `Enter the correct total selling price in ETB for order #${orderId} (e.g. 3500):`,
+    );
+  }
+
+  @Action(/^admin:reject:(\d+)$/)
+  async onAdminReject(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    const order = await this.orders.findById(orderId);
+    if (!order || order.status !== 'awaiting_approval') {
+      await this.safeAnswer(ctx, 'Order not found or not awaiting approval.', true);
+      return;
+    }
+
+    this.adminAuth.setPendingForOrder(from.id, 'reject-reason', orderId);
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply(`Enter the rejection reason for order #${orderId}:`);
   }
 
   @Action(/^admin:done:(\d+)$/)
@@ -1429,6 +1651,15 @@ export class BotUpdate {
       case 'add-category-commission':
         await this.handleAddCategoryCommission(ctx, userId, text);
         break;
+      case 'edit-bank-account':
+        await this.handleEditBankAccount(ctx, userId, text);
+        break;
+      case 'adjust-price':
+        await this.handleAdjustPrice(ctx, userId, text);
+        break;
+      case 'reject-reason':
+        await this.handleRejectReason(ctx, userId, text);
+        break;
     }
   }
 
@@ -1905,6 +2136,229 @@ export class BotUpdate {
     });
   }
 
+  private async getPaymentBankAccount(): Promise<string | null> {
+    const raw = await this.settings.get(SETTING_KEYS.PAYMENT_BANK_ACCOUNT);
+    const trimmed = (raw || '').trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private async handleEditBankAccount(ctx: Context, userId: number, text: string): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const value = text.trim();
+    if (!value || value.length > 200) {
+      await ctx.reply('Enter a valid bank account or payment details (max 200 characters).');
+      return;
+    }
+
+    await this.settings.set(SETTING_KEYS.PAYMENT_BANK_ACCOUNT, value);
+    this.adminAuth.clearPending(userId);
+    this.logger.log(`Payment bank account updated by admin ${userId}`);
+    await ctx.reply('✅ Bank account updated.');
+    await ctx.reply(await this.buildSettingsMessage(), {
+      parse_mode: 'HTML',
+      ...(await this.buildSettingsKeyboard()),
+    });
+  }
+
+  private async handleAdjustPrice(ctx: Context, userId: number, text: string): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const orderId = this.adminAuth.getPendingOrderId(userId);
+    if (!orderId) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Session expired. Open Approval queue and try again.');
+      return;
+    }
+
+    const bankAccount = await this.getPaymentBankAccount();
+    if (!bankAccount) {
+      await ctx.reply('Set the payment bank account in Settings before adjusting prices.');
+      return;
+    }
+
+    const value = parseFloat(text.replace(/,/g, ''));
+    if (!Number.isFinite(value) || value <= 0 || value > 10_000_000) {
+      await ctx.reply('Invalid price. Enter a positive number in ETB, e.g. 3500.');
+      return;
+    }
+
+    const orderBefore = await this.orders.findById(orderId);
+    if (!orderBefore || orderBefore.status !== 'awaiting_approval') {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Order not found or no longer awaiting approval.');
+      return;
+    }
+
+    const originalEtb = orderBefore.originalSellingEtb ?? orderBefore.sellingEtb;
+    const updated = await this.orders.overridePrice(orderId, value);
+    this.adminAuth.clearPending(userId);
+
+    if (!updated) {
+      await ctx.reply('Could not update price. Please try again.');
+      return;
+    }
+
+    this.logger.log(
+      `Order #${orderId} price adjusted to ${updated.sellingEtb} ETB by admin ${userId}`,
+    );
+
+    if (updated.sellingEtb < originalEtb) {
+      await this.sendDiscountMessageToReseller(updated, originalEtb);
+    }
+    await this.sendPaymentRequestToReseller(updated, bankAccount, false);
+    await ctx.reply(
+      `✅ Order #${orderId} price set to ${updated.sellingEtb.toLocaleString('en-US')} ETB. User notified.`,
+    );
+  }
+
+  private async handleRejectReason(ctx: Context, userId: number, text: string): Promise<void> {
+    if (!(await this.admins.isAdmin(userId))) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Admin access required.');
+      return;
+    }
+
+    const orderId = this.adminAuth.getPendingOrderId(userId);
+    if (!orderId) {
+      this.adminAuth.clearPending(userId);
+      await ctx.reply('Session expired. Open Approval queue and try again.');
+      return;
+    }
+
+    const reason = text.trim();
+    if (!reason || reason.length > 500) {
+      await ctx.reply('Enter a rejection reason (max 500 characters).');
+      return;
+    }
+
+    const updated = await this.orders.reject(orderId, reason);
+    this.adminAuth.clearPending(userId);
+
+    if (!updated) {
+      await ctx.reply('Could not reject order. It may have already been processed.');
+      return;
+    }
+
+    this.logger.log(`Order #${orderId} rejected by admin ${userId}`);
+    await this.sendRejectionToReseller(updated);
+    await ctx.reply(`✗ Order #${orderId} rejected. User notified.`);
+  }
+
+  private async sendDiscountMessageToReseller(order: Order, originalEtb: number): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    const savings = originalEtb - order.sellingEtb;
+    const lines = [
+      '<b>Good news! Medaf collation adjusted your price.</b>',
+      '',
+      `Original: <b>${originalEtb.toLocaleString('en-US')} ETB</b>`,
+      `New: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
+    ];
+    if (savings > 0) {
+      lines.push(`You save <b>${savings.toLocaleString('en-US')} ETB</b>.`);
+    }
+    lines.push('', `Order <b>#${order.id}</b>`);
+
+    try {
+      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, lines.join('\n'), {
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      this.fileLogger.logError('sendDiscountMessage', err, { orderId: order.id });
+    }
+  }
+
+  private async sendRejectionToReseller(order: Order): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    const reason = this.escapeHtml(order.rejectionReason || 'No reason provided.');
+    const lines = [
+      `<b>Order #${order.id} was not approved by Medaf collation</b>`,
+      '',
+      reason,
+    ];
+
+    try {
+      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, lines.join('\n'), {
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      this.fileLogger.logError('sendRejection', err, { orderId: order.id });
+    }
+  }
+
+  private async sendPaymentRequestToReseller(
+    order: Order,
+    bankAccount: string,
+    sendDiscountFirst: boolean,
+  ): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    if (sendDiscountFirst) {
+      const originalEtb = order.originalSellingEtb ?? order.sellingEtb;
+      if (order.sellingEtb < originalEtb) {
+        await this.sendDiscountMessageToReseller(order, originalEtb);
+      }
+    }
+
+    const downPayment =
+      order.downPaymentEtb ?? computeDownPaymentEtb(order.sellingEtb);
+    const message = this.buildPaymentRequestMessage(order, bankAccount, downPayment);
+
+    try {
+      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, message, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Paid', `pay:confirm:${order.id}`),
+            Markup.button.callback('❌ Cancel', `cancel:${order.id}`),
+          ],
+        ]),
+      });
+    } catch (err) {
+      this.fileLogger.logError('sendPaymentRequest', err, { orderId: order.id });
+    }
+  }
+
+  private buildPaymentRequestMessage(
+    order: Order,
+    bankAccount: string,
+    downPaymentEtb: number,
+  ): string {
+    return [
+      `<b>Order #${order.id} approved by Medaf collation</b>`,
+      '',
+      `Total: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
+      `Down payment (50%): <b>${downPaymentEtb.toLocaleString('en-US')} ETB</b>`,
+      `Transfer to: <b>${this.escapeHtml(bankAccount)}</b>`,
+      '',
+      'Tap below after you have paid.',
+    ].join('\n');
+  }
+
+  private buildPaymentConfirmedMessage(order: Order): string {
+    const downPayment =
+      order.downPaymentEtb ?? computeDownPaymentEtb(order.sellingEtb);
+    return [
+      `<b>Order #${order.id}</b>`,
+      '',
+      `Total: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
+      `Down payment received: <b>${downPayment.toLocaleString('en-US')} ETB</b>`,
+    ].join('\n');
+  }
+
   private async sendAdminMenu(ctx: Context): Promise<void> {
     const from = ctx.from;
     await ctx.reply(this.buildAdminMenuText(from?.id), {
@@ -1917,8 +2371,9 @@ export class BotUpdate {
     const rows: ReturnType<typeof Markup.button.callback>[][] = [
       [
         Markup.button.callback('📊 Report', 'admin:report'),
-        Markup.button.callback('📦 Pending', 'admin:pending'),
+        Markup.button.callback('✅ Approval', 'admin:approval'),
       ],
+      [Markup.button.callback('📦 Delivery queue', 'admin:pending')],
     ];
     if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
       rows.push([Markup.button.callback('🩺 Health Report', 'admin:health')]);
@@ -1934,7 +2389,8 @@ export class BotUpdate {
       '',
       'Choose an option:',
       '• <b>Report</b> — order stats and recent orders',
-      '• <b>Pending</b> — mark pending orders as delivered',
+      '• <b>Approval</b> — review new order requests',
+      '• <b>Delivery queue</b> — mark confirmed orders as delivered',
       '• <b>Settings</b> — bot config and admin list',
     ];
     if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
@@ -1947,12 +2403,18 @@ export class BotUpdate {
   private buildReportMessage(
     report: Awaited<ReturnType<OrdersService['getReport']>>,
   ): string {
-    const total = report.pending + report.cancelled + report.completed;
+    const total =
+      report.awaitingApproval +
+      report.awaitingPayment +
+      report.pending +
+      report.cancelled +
+      report.completed;
     const lines = [
       '<b>📊 Orders report</b>',
       '',
       `<b>Total orders:</b> ${total}`,
-      `⏳ Pending: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Completed: <b>${report.completed}</b>`,
+      `✅ Awaiting approval: <b>${report.awaitingApproval}</b>   💳 Awaiting payment: <b>${report.awaitingPayment}</b>`,
+      `📦 Delivery queue: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Completed: <b>${report.completed}</b>`,
       `💰 Revenue (non-cancelled): <b>${report.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
       `🕐 Last 24h: <b>${report.last24hCount}</b> order(s)`,
       '',
@@ -1990,17 +2452,75 @@ export class BotUpdate {
     return lines.join('\n');
   }
 
+  private buildApprovalMessage(
+    awaiting: Awaited<ReturnType<OrdersService['findAwaitingApproval']>>,
+  ): string {
+    const lines = [
+      '<b>✅ Awaiting approval</b>',
+      '',
+      `Total: <b>${awaiting.length}</b>`,
+    ];
+
+    if (awaiting.length === 0) {
+      lines.push('', '<i>No orders awaiting approval.</i>');
+      return lines.join('\n');
+    }
+
+    awaiting.forEach((o, idx) => {
+      const r = (o as unknown as {
+        reseller?: { fullName?: string | null; phoneNumber?: string | null };
+      }).reseller;
+      const name = this.escapeHtml(r?.fullName || 'unknown');
+      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
+      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
+      lines.push('');
+      lines.push(`<b>Order ${idx + 1}</b>`);
+      lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Submitted: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
+      lines.push(`  Product: ${title}`);
+      const variant = this.formatOrderVariant(o);
+      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
+      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
+      lines.push(`  Name:    ${name}`);
+      lines.push(`  Phone:   ${phone}`);
+      const link = this.formatOrderLink(o);
+      if (link) lines.push(`  Link:    ${link}`);
+    });
+
+    lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
+    return lines.join('\n');
+  }
+
+  private approvalKeyboard(
+    awaiting: Awaited<ReturnType<OrdersService['findAwaitingApproval']>>,
+  ) {
+    const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+    for (const o of awaiting) {
+      rows.push([
+        Markup.button.callback(`✓ Approve #${o.id}`, `admin:approve:${o.id}`),
+        Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
+        Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
+      ]);
+    }
+    rows.push([
+      Markup.button.callback('📦 Delivery queue', 'admin:pending'),
+      Markup.button.callback('📊 Report', 'admin:report'),
+    ]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
   private buildPendingMessage(
     pending: Awaited<ReturnType<OrdersService['findPending']>>,
   ): string {
     const lines = [
-      '<b>📦 Pending orders</b>',
+      '<b>📦 Delivery queue</b>',
       '',
-      `Total pending: <b>${pending.length}</b>`,
+      `Awaiting delivery: <b>${pending.length}</b>`,
     ];
 
     if (pending.length === 0) {
-      lines.push('', '<i>No pending orders. All caught up.</i>');
+      lines.push('', '<i>No orders in the delivery queue.</i>');
       return lines.join('\n');
     }
 
@@ -2036,9 +2556,10 @@ export class BotUpdate {
       Markup.button.callback(`✓ Mark #${o.id} done`, `admin:done:${o.id}`),
     ]);
     rows.push([
+      Markup.button.callback('✅ Approval', 'admin:approval'),
       Markup.button.callback('📊 Report', 'admin:report'),
-      Markup.button.callback('⚙️ Settings', 'admin:settings'),
     ]);
+    rows.push([Markup.button.callback('⚙️ Settings', 'admin:settings')]);
     rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
     return Markup.inlineKeyboard(rows);
   }
@@ -2087,7 +2608,9 @@ export class BotUpdate {
   }
 
   private formatStatus(status: string): string {
-    if (status === 'pending') return '⏳ Pending';
+    if (status === 'awaiting_approval') return '✅ Awaiting approval';
+    if (status === 'awaiting_payment') return '💳 Awaiting payment';
+    if (status === 'pending') return '📦 Delivery queue';
     if (status === 'cancelled') return '✗ Cancelled';
     if (status === 'completed') return '✓ Completed';
     return status;
@@ -2154,6 +2677,9 @@ export class BotUpdate {
       `• Price ceiling: <b>${ceiling.toFixed(2)}×</b> (HIGH factor allowed up to <b>${ceilingPct}%</b> above anchor)`,
       `• Final price uplift: <b>${finalMult.toFixed(2)}×</b> (${finalPct >= 0 ? '+' : ''}${finalPct}% on every price)`,
       '',
+      '<b>Payments</b>',
+      `• Down payment bank account: <b>${this.escapeHtml(await this.getPaymentBankAccount() || 'not set')}</b>`,
+      '',
       `<b>Admins</b> (${adminList.length})`,
     ];
 
@@ -2182,6 +2708,7 @@ export class BotUpdate {
         Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling'),
         Markup.button.callback('✏️ Final uplift ×', 'admin:edit:final-mult'),
       ],
+      [Markup.button.callback('✏️ Bank account', 'admin:edit:bank-account')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
     ];

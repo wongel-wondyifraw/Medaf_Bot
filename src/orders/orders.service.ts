@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Order } from './order.entity';
+import { Order, OrderStatus } from './order.entity';
 
 export interface CreateOrderInput {
   resellerId: number;
@@ -18,12 +18,18 @@ export interface CreateOrderInput {
 }
 
 export interface OrdersReport {
+  awaitingApproval: number;
+  awaitingPayment: number;
   pending: number;
   cancelled: number;
   completed: number;
   totalRevenueEtb: number;
   last24hCount: number;
   recent: Order[];
+}
+
+export function computeDownPaymentEtb(sellingEtb: number): number {
+  return Math.ceil(sellingEtb / 2);
 }
 
 @Injectable()
@@ -34,7 +40,11 @@ export class OrdersService {
   ) {}
 
   create(input: CreateOrderInput): Promise<Order> {
-    const order = this.repo.create({ ...input, status: 'pending' });
+    const order = this.repo.create({
+      ...input,
+      status: 'awaiting_approval',
+      originalSellingEtb: input.sellingEtb,
+    });
     return this.repo.save(order);
   }
 
@@ -42,12 +52,58 @@ export class OrdersService {
     return this.repo.findOne({ where: { id } });
   }
 
+  findByIdWithReseller(id: number): Promise<Order | null> {
+    return this.repo
+      .createQueryBuilder('o')
+      .leftJoinAndSelect('o.reseller', 'reseller')
+      .where('o.id = :id', { id })
+      .getOne();
+  }
+
   async cancel(id: number): Promise<Order | null> {
     const order = await this.findById(id);
     if (!order) return null;
     if (order.status === 'cancelled') return order;
+    if (order.status === 'completed') return null;
     order.status = 'cancelled';
     order.cancelledAt = new Date();
+    return this.repo.save(order);
+  }
+
+  async approve(id: number): Promise<Order | null> {
+    const order = await this.findById(id);
+    if (!order || order.status !== 'awaiting_approval') return null;
+    order.downPaymentEtb = computeDownPaymentEtb(order.sellingEtb);
+    order.adminApprovedAt = new Date();
+    order.status = 'awaiting_payment';
+    return this.repo.save(order);
+  }
+
+  async overridePrice(id: number, newSellingEtb: number): Promise<Order | null> {
+    const order = await this.findById(id);
+    if (!order || order.status !== 'awaiting_approval') return null;
+    if (!Number.isFinite(newSellingEtb) || newSellingEtb <= 0) return null;
+    order.sellingEtb = Math.round(newSellingEtb);
+    order.downPaymentEtb = computeDownPaymentEtb(order.sellingEtb);
+    order.adminApprovedAt = new Date();
+    order.status = 'awaiting_payment';
+    return this.repo.save(order);
+  }
+
+  async reject(id: number, reason: string): Promise<Order | null> {
+    const order = await this.findById(id);
+    if (!order || order.status !== 'awaiting_approval') return null;
+    order.status = 'cancelled';
+    order.rejectionReason = reason.trim().slice(0, 500);
+    order.cancelledAt = new Date();
+    return this.repo.save(order);
+  }
+
+  async confirmPayment(id: number): Promise<Order | null> {
+    const order = await this.findById(id);
+    if (!order || order.status !== 'awaiting_payment') return null;
+    order.status = 'pending';
+    order.paymentConfirmedAt = new Date();
     return this.repo.save(order);
   }
 
@@ -56,8 +112,18 @@ export class OrdersService {
     if (!order) return null;
     if (order.status === 'completed') return order;
     if (order.status === 'cancelled') return null;
+    if (order.status !== 'pending') return null;
     order.status = 'completed';
     return this.repo.save(order);
+  }
+
+  findAwaitingApproval(): Promise<Order[]> {
+    return this.repo
+      .createQueryBuilder('o')
+      .leftJoinAndSelect('o.reseller', 'reseller')
+      .where("o.status = 'awaiting_approval'")
+      .orderBy('o.created_at', 'ASC')
+      .getMany();
   }
 
   findPending(): Promise<Order[]> {
@@ -71,7 +137,7 @@ export class OrdersService {
 
   findCreatedSince(
     since: Date,
-    status?: 'pending' | 'cancelled' | 'completed',
+    status?: OrderStatus,
   ): Promise<Order[]> {
     const qb = this.repo
       .createQueryBuilder('o')
@@ -83,12 +149,25 @@ export class OrdersService {
     return qb.orderBy('o.created_at', 'ASC').getMany();
   }
 
+  findCreatedSinceWithStatuses(since: Date, statuses: OrderStatus[]): Promise<Order[]> {
+    if (statuses.length === 0) return Promise.resolve([]);
+    const qb = this.repo
+      .createQueryBuilder('o')
+      .leftJoinAndSelect('o.reseller', 'reseller')
+      .where('o.created_at > :since', { since })
+      .andWhere('o.status IN (:...statuses)', { statuses });
+    return qb.orderBy('o.created_at', 'ASC').getMany();
+  }
+
   async getReport(): Promise<OrdersReport> {
-    const [pending, cancelled, completed] = await Promise.all([
-      this.repo.count({ where: { status: 'pending' } }),
-      this.repo.count({ where: { status: 'cancelled' } }),
-      this.repo.count({ where: { status: 'completed' } }),
-    ]);
+    const [awaitingApproval, awaitingPayment, pending, cancelled, completed] =
+      await Promise.all([
+        this.repo.count({ where: { status: 'awaiting_approval' } }),
+        this.repo.count({ where: { status: 'awaiting_payment' } }),
+        this.repo.count({ where: { status: 'pending' } }),
+        this.repo.count({ where: { status: 'cancelled' } }),
+        this.repo.count({ where: { status: 'completed' } }),
+      ]);
 
     const revenueRow = await this.repo
       .createQueryBuilder('o')
@@ -110,6 +189,15 @@ export class OrdersService {
       .limit(10)
       .getMany();
 
-    return { pending, cancelled, completed, totalRevenueEtb, last24hCount, recent };
+    return {
+      awaitingApproval,
+      awaitingPayment,
+      pending,
+      cancelled,
+      completed,
+      totalRevenueEtb,
+      last24hCount,
+      recent,
+    };
   }
 }

@@ -15,6 +15,8 @@ export interface AppConfig {
    * to the bot owner's Telegram ID; override via env in dev / staging.
    */
   healthReportChatId: string;
+  /** Optional default bank account for down-payment transfers (admin can override in Settings). */
+  paymentBankAccount: string;
   database: {
     url: string;
     logging: boolean;
@@ -99,6 +101,7 @@ export default function configuration(): AppConfig {
     telegramWebhookUrl: envStr('TELEGRAM_WEBHOOK_URL'),
     telegramWebhookPath: envStr('TELEGRAM_WEBHOOK_PATH', '/telegram/webhook'),
     healthReportChatId: envStr('HEALTH_REPORT_CHAT_ID', '1041346091'),
+    paymentBankAccount: envStr('PAYMENT_BANK_ACCOUNT'),
     database: {
       url: envStr('DATABASE_URL'),
       logging: envBool('TYPEORM_LOGGING'),

@@ -9,7 +9,12 @@ import {
 } from 'typeorm';
 import { Reseller } from '../resellers/reseller.entity';
 
-export type OrderStatus = 'pending' | 'cancelled' | 'completed';
+export type OrderStatus =
+  | 'awaiting_approval'
+  | 'awaiting_payment'
+  | 'pending'
+  | 'cancelled'
+  | 'completed';
 
 // PostgreSQL NUMERIC columns are returned as strings by the pg driver. This
 // transformer keeps the application-side type as a plain number while
@@ -79,6 +84,21 @@ export class Order {
 
   @Column({ type: 'int', name: 'selling_etb' })
   sellingEtb!: number;
+
+  @Column({ type: 'int', nullable: true, name: 'original_selling_etb' })
+  originalSellingEtb!: number | null;
+
+  @Column({ type: 'int', nullable: true, name: 'down_payment_etb' })
+  downPaymentEtb!: number | null;
+
+  @Column({ type: 'text', nullable: true, name: 'rejection_reason' })
+  rejectionReason!: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true, name: 'admin_approved_at' })
+  adminApprovedAt!: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true, name: 'payment_confirmed_at' })
+  paymentConfirmedAt!: Date | null;
 
   @Index()
   @Column({ type: 'text', default: 'pending' })

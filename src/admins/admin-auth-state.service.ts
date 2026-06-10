@@ -21,6 +21,9 @@ export type PendingAction =
   | 'edit-rate-aed'
   | 'edit-ceiling'
   | 'edit-final-mult'
+  | 'edit-bank-account'
+  | 'adjust-price'
+  | 'reject-reason'
   | 'addprice-link'
   | 'addprice-eth-usd'
   | 'addprice-aed';
@@ -28,6 +31,7 @@ export type PendingAction =
 interface PendingState {
   action: PendingAction;
   since: number;
+  orderId?: number;
 }
 
 @Injectable()
@@ -38,6 +42,10 @@ export class AdminAuthStateService {
     this.state.set(userId, { action, since: Date.now() });
   }
 
+  setPendingForOrder(userId: number, action: PendingAction, orderId: number): void {
+    this.state.set(userId, { action, since: Date.now(), orderId });
+  }
+
   getPending(userId: number): PendingAction | null {
     const entry = this.state.get(userId);
     if (!entry) return null;
@@ -46,6 +54,16 @@ export class AdminAuthStateService {
       return null;
     }
     return entry.action;
+  }
+
+  getPendingOrderId(userId: number): number | null {
+    const entry = this.state.get(userId);
+    if (!entry) return null;
+    if (Date.now() - entry.since > STATE_TTL_MS) {
+      this.state.delete(userId);
+      return null;
+    }
+    return entry.orderId ?? null;
   }
 
   clearPending(userId: number): void {

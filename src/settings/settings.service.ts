@@ -12,6 +12,7 @@ export const SETTING_KEYS = {
   USD_TO_AED: 'usd_to_aed',
   PRICING_CEILING_MULTIPLIER: 'pricing_ceiling_multiplier',
   PRICING_FINAL_MULTIPLIER: 'pricing_final_multiplier',
+  PAYMENT_BANK_ACCOUNT: 'payment_bank_account',
 } as const;
 
 @Injectable()
@@ -26,6 +27,7 @@ export class SettingsService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     const pricing = this.config.get('pricing', { infer: true });
+    const paymentBankAccount = this.config.get('paymentBankAccount', { infer: true });
     const defaults: Array<[string, string | null]> = [
       [SETTING_KEYS.PROFIT_MARGIN, String(pricing.profitMarginPercent)],
       [SETTING_KEYS.DELIVERY_ETB, String(pricing.deliveryCostEtb)],
@@ -42,6 +44,7 @@ export class SettingsService implements OnModuleInit {
         SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
         String(pricing.finalMultiplier),
       ],
+      [SETTING_KEYS.PAYMENT_BANK_ACCOUNT, paymentBankAccount || null],
     ];
 
     for (const [key, value] of defaults) {
