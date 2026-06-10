@@ -117,6 +117,14 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
+  findByResellerId(resellerId: number, limit = 25): Promise<Order[]> {
+    return this.repo.find({
+      where: { resellerId },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
+
   findAwaitingApproval(): Promise<Order[]> {
     return this.repo
       .createQueryBuilder('o')

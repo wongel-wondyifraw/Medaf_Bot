@@ -105,7 +105,7 @@ export class BotUpdate {
     if (!reseller) return;
     if (reseller.isRegistered()) {
       await ctx.reply(
-        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
+        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.\n\nUse /myorders to see your order history.',
         Markup.removeKeyboard(),
       );
       return;
@@ -139,6 +139,113 @@ export class BotUpdate {
 
     this.adminAuth.setPending(from.id, 'admin-grant');
     await ctx.reply('🔐 Admin access\n\nEnter the admin password:');
+  }
+
+  @Command('myorders')
+  async onMyOrders(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+
+    const reseller = await this.resellers.findByTelegramId(from.id);
+    if (!reseller?.isRegistered()) {
+      await ctx.reply('Please complete registration with /start before viewing orders.');
+      return;
+    }
+
+    const orders = await this.orders.findByResellerId(reseller.id);
+    await ctx.reply(this.buildMyOrdersMessage(orders), { parse_mode: 'HTML' });
+  }
+
+  @Command('release')
+  async onReleaseCommand(@Ctx() ctx: Context) {
+    const from = ctx.from;
+    if (!from) return;
+    if (!(await this.admins.isAdmin(from.id))) {
+      await ctx.reply('Unknown command.');
+      return;
+    }
+
+    const body = this.buildReleaseNoteMessage();
+    const counts = await this.countReleaseRecipients();
+
+    await ctx.reply(
+      '👀 <i>Below is exactly what registered users will receive:</i>',
+      { parse_mode: 'HTML' },
+    );
+    await ctx.reply(body, { parse_mode: 'HTML' });
+    await ctx.reply(
+      `📤 Send this v2.0 release note to <b>${counts.total}</b> people?\n` +
+        `<i>(${counts.registeredResellers} registered resellers + ${counts.admins} admins, duplicates removed)</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✓ Yes, send it', 'release:confirm'),
+            Markup.button.callback('✗ Cancel', 'release:cancel'),
+          ],
+        ]),
+      },
+    );
+  }
+
+  @Action('release:cancel')
+  async onReleaseCancel(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Release note not sent.', false);
+    try {
+      await ctx.editMessageText('Release note cancelled — nothing was sent.', {
+        parse_mode: 'HTML',
+      });
+      await ctx.editMessageReplyMarkup(undefined);
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('releaseCancel', err);
+    }
+  }
+
+  @Action('release:confirm')
+  async onReleaseSend(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+
+    await this.safeAnswer(ctx, 'Sending release notes…', false);
+
+    const body = this.buildReleaseNoteMessage();
+    const recipientIds = await this.collectReleaseRecipientIds();
+    let sent = 0;
+    let failed = 0;
+
+    for (const telegramId of recipientIds) {
+      try {
+        await this.bot.telegram.sendMessage(telegramId, body, { parse_mode: 'HTML' });
+        sent++;
+      } catch (err) {
+        failed++;
+        const e = err as Error;
+        this.logger.warn(`Release note failed for ${telegramId}: ${e.message}`);
+      }
+      await this.sleep(35);
+    }
+
+    this.logger.log(
+      `Release note v2.0 sent by admin ${from.id}: ${sent} ok, ${failed} failed`,
+    );
+
+    try {
+      await ctx.editMessageText(
+        `✅ Release note sent to <b>${sent}</b> user(s).${failed > 0 ? ` Failed: <b>${failed}</b>.` : ''}`,
+        { parse_mode: 'HTML' },
+      );
+      await ctx.editMessageReplyMarkup(undefined);
+    } catch (err) {
+      if (!this.isMessageNotModifiedError(err)) {
+        await ctx.reply(
+          `✅ Release note sent to <b>${sent}</b> user(s).${failed > 0 ? ` Failed: <b>${failed}</b>.` : ''}`,
+          { parse_mode: 'HTML' },
+        );
+      }
+    }
   }
 
   @Command('notadmin')
@@ -183,7 +290,7 @@ export class BotUpdate {
 
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
-      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
+      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.\n\nUse /myorders to see your order history.',
       Markup.removeKeyboard(),
     );
   }
@@ -2403,6 +2510,103 @@ export class BotUpdate {
       `Total: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
       `Down payment received: <b>${downPayment.toLocaleString('en-US')} ETB</b>`,
     ].join('\n');
+  }
+
+  private buildReleaseNoteMessage(): string {
+    return [
+      '🎉 <b>Medaf Bot v2.0 is live!</b>',
+      '',
+      'We\u2019ve updated the bot to make ordering clearer and pricing fairer. Here\u2019s what\u2019s new:',
+      '',
+      '━━━━━━━━━━━━━━━━',
+      '',
+      '💰 <b>Better cost management</b>',
+      'Medaf collation reviews every order before you pay. If we can lower the price, you\u2019ll get a discount 🎁. If our estimate was off, we\u2019ll explain a small price correction politely.',
+      '',
+      '💳 <b>Simpler payments</b>',
+      'After approval, transfer <b>50%</b> to our bank account and tap <b>✅ Paid</b> in the bot. Your order is confirmed right away.',
+      '',
+      '📋 <b>See your orders</b>',
+      'Check all your orders and their status anytime — just type <code>/myorders</code>',
+      '',
+      '━━━━━━━━━━━━━━━━',
+      '',
+      '🙏 Thank you for ordering with <b>Medaf collation</b>.',
+    ].join('\n');
+  }
+
+  private async countReleaseRecipients(): Promise<{
+    total: number;
+    registeredResellers: number;
+    admins: number;
+  }> {
+    const ids = await this.collectReleaseRecipientIds();
+    const registered = await this.resellers.findAllRegistered();
+    const adminList = await this.admins.findAll();
+    return {
+      total: ids.size,
+      registeredResellers: registered.length,
+      admins: adminList.length,
+    };
+  }
+
+  private async collectReleaseRecipientIds(): Promise<Set<string>> {
+    const registered = await this.resellers.findAllRegistered();
+    const adminList = await this.admins.findAll();
+    const ids = new Set<string>();
+    for (const r of registered) ids.add(r.telegramId);
+    for (const a of adminList) ids.add(a.telegramId);
+    return ids;
+  }
+
+  private buildMyOrdersMessage(orders: Order[]): string {
+    const lines = [
+      '<b>📋 My orders</b>',
+      '',
+      `Showing your last <b>${orders.length}</b> order(s).`,
+    ];
+
+    if (orders.length === 0) {
+      lines.push('', '<i>No orders yet. Send a SHEIN link to place your first order.</i>');
+      return lines.join('\n');
+    }
+
+    for (const o of orders) {
+      const title = this.escapeHtml((o.productTitle || 'Product').slice(0, 50));
+      const status = this.formatResellerOrderStatus(o.status);
+      const price = `${o.sellingEtb.toLocaleString('en-US')} ETB`;
+      const date = this.escapeHtml(formatGmtPlus3(o.createdAt));
+      const variant = this.formatOrderVariant(o);
+      lines.push('');
+      lines.push(`<b>#${o.id}</b> — ${status}`);
+      lines.push(`${title}`);
+      lines.push(`${price} · ${date}`);
+      if (variant) lines.push(this.escapeHtml(variant));
+    }
+
+    lines.push('', '<i>Send a SHEIN link to place a new order.</i>');
+    return lines.join('\n');
+  }
+
+  private formatResellerOrderStatus(status: Order['status']): string {
+    switch (status) {
+      case 'awaiting_approval':
+        return '⏳ Awaiting Medaf collation approval';
+      case 'awaiting_payment':
+        return '💳 Awaiting your payment';
+      case 'pending':
+        return '📦 Confirmed — in progress';
+      case 'completed':
+        return '✓ Completed';
+      case 'cancelled':
+        return '✗ Cancelled';
+      default:
+        return status;
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async sendAdminMenu(ctx: Context): Promise<void> {

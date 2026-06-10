@@ -43,6 +43,15 @@ export class ResellersService {
     return this.repo.save(reseller);
   }
 
+  findAllRegistered(): Promise<Reseller[]> {
+    return this.repo
+      .createQueryBuilder('r')
+      .where('r.registered_at IS NOT NULL')
+      .andWhere('r.full_name IS NOT NULL')
+      .andWhere('r.phone_number IS NOT NULL')
+      .getMany();
+  }
+
   async setPhoneNumber(
     telegramId: number | string,
     phoneNumber: string,
