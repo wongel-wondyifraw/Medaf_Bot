@@ -301,7 +301,7 @@ export class BotUpdate {
         await ctx.reply('Admin access required. Send /admin first.');
         return;
       }
-      await this.replyAdminApprovalQueue(ctx);
+      await this.replyAdminDeliveryQueue(ctx);
       return;
     }
 
@@ -2570,12 +2570,12 @@ export class BotUpdate {
     return this.buildStickyReplyKeyboard({ includeUpdate, isAdmin });
   }
 
-  private async replyAdminApprovalQueue(ctx: Context): Promise<void> {
-    const awaiting = await this.orders.findAwaitingApproval();
+  private async replyAdminDeliveryQueue(ctx: Context): Promise<void> {
+    const pending = await this.orders.findPending();
     const from = ctx.from;
-    await ctx.reply(this.buildApprovalMessage(awaiting), {
+    await ctx.reply(this.buildPendingMessage(pending), {
       parse_mode: 'HTML',
-      ...this.approvalKeyboard(awaiting),
+      ...this.pendingKeyboard(pending),
       ...(await this.stickyReplyKeyboardFor(from?.id)),
     });
   }
@@ -2685,7 +2685,7 @@ export class BotUpdate {
     });
     if (from) {
       await ctx.reply(
-        'Admin shortcut: tap <b>Pending orders</b> on the bottom bar anytime.',
+        'Admin shortcut: tap <b>Pending orders</b> on the bottom bar to open the delivery queue.',
         {
           parse_mode: 'HTML',
           ...(await this.stickyReplyKeyboardFor(from.id)),
@@ -2880,7 +2880,7 @@ export class BotUpdate {
     pending: Awaited<ReturnType<OrdersService['findPending']>>,
   ) {
     const rows: ReturnType<typeof Markup.button.callback>[][] = pending.map((o) => [
-      Markup.button.callback(`✓ Mark #${o.id} done`, `admin:done:${o.id}`),
+      Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
     ]);
     rows.push([
       Markup.button.callback('✅ Approval', 'admin:approval'),
