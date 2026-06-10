@@ -45,6 +45,8 @@ import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 @Update()
 export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
+  private readonly myOrdersButtonLabel = '📋 My orders';
+  private readonly updateButtonLabel = '🔄 Update';
 
   constructor(
     @InjectBot() private readonly bot: Telegraf,
@@ -99,26 +101,7 @@ export class BotUpdate {
 
   @Start()
   async onStart(@Ctx() ctx: Context) {
-    const from = ctx.from;
-    if (from) this.adminAuth.clearPending(from.id);
-    const reseller = await this.ensureReseller(ctx);
-    if (!reseller) return;
-    if (reseller.isRegistered()) {
-      await ctx.reply(
-        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
-        this.myOrdersKeyboard(),
-      );
-      return;
-    }
-    if (!reseller.fullName) {
-      await this.askForName(ctx);
-    } else if (!reseller.phoneNumber) {
-      await this.askForPhone(ctx);
-    } else {
-      await ctx.reply(
-        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
-      );
-    }
+    await this.handleUserStart(ctx, false);
   }
 
   @Command('admin')
@@ -168,7 +151,7 @@ export class BotUpdate {
       '👀 <i>Below is exactly what registered users will receive:</i>',
       { parse_mode: 'HTML' },
     );
-    await ctx.reply(body, { parse_mode: 'HTML', ...this.myOrdersKeyboard() });
+    await ctx.reply(body, { parse_mode: 'HTML', ...this.stickyUserReplyKeyboard(true) });
     await ctx.reply(
       `📤 Send this v2.0 release note to <b>${counts.total}</b> people?\n` +
         `<i>(${counts.registeredResellers} registered resellers + ${counts.admins} admins, duplicates removed)</i>`,
@@ -216,7 +199,7 @@ export class BotUpdate {
       try {
         await this.bot.telegram.sendMessage(telegramId, body, {
           parse_mode: 'HTML',
-          ...this.myOrdersKeyboard(),
+          ...this.stickyUserReplyKeyboard(true),
         });
         sent++;
       } catch (err) {
@@ -290,7 +273,7 @@ export class BotUpdate {
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
       'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
-      this.myOrdersKeyboard(),
+      this.stickyUserReplyKeyboard(),
     );
   }
 
@@ -300,6 +283,16 @@ export class BotUpdate {
     const message = ctx.message as { text?: string } | undefined;
     if (!from || !message?.text) return;
     const text = message.text.trim();
+
+    if (text === this.myOrdersButtonLabel) {
+      await this.replyMyOrders(ctx);
+      return;
+    }
+
+    if (text === this.updateButtonLabel) {
+      await this.handleUserStart(ctx, true);
+      return;
+    }
 
     const pending = this.adminAuth.getPending(from.id);
     if (pending) {
@@ -2526,7 +2519,10 @@ export class BotUpdate {
       'After approval, transfer <b>50%</b> to our bank account and tap <b>✅ Paid</b> in the bot. Your order is confirmed right away.',
       '',
       '📋 <b>See your orders</b>',
-      'Check all your orders and their status anytime — tap <b>My orders</b> below.',
+      'Check all your orders and their status anytime — use the <b>My orders</b> button at the bottom of your chat.',
+      '',
+      '🔄 <b>Important — tap Update</b>',
+      'Please tap <b>🔄 Update</b> at the bottom of your chat to refresh the bot and load v2.0.',
       '',
       '━━━━━━━━━━━━━━━━',
       '',
@@ -2558,10 +2554,42 @@ export class BotUpdate {
     return ids;
   }
 
-  private myOrdersKeyboard() {
-    return Markup.inlineKeyboard([
-      [Markup.button.callback('📋 My orders', 'user:myorders')],
-    ]);
+  /** @param includeUpdate Show one-time Update button (release broadcast); hidden after user taps it. */
+  private stickyUserReplyKeyboard(includeUpdate = false) {
+    const row = includeUpdate
+      ? [this.updateButtonLabel, this.myOrdersButtonLabel]
+      : [this.myOrdersButtonLabel];
+    return Markup.keyboard([row]).resize().persistent();
+  }
+
+  private async handleUserStart(ctx: Context, refreshed: boolean): Promise<void> {
+    const from = ctx.from;
+    if (from) {
+      this.adminAuth.clearPending(from.id);
+      this.orderDraft.clearDraft(from.id);
+    }
+    const reseller = await this.ensureReseller(ctx);
+    if (!reseller) return;
+    if (reseller.isRegistered()) {
+      const intro = refreshed
+        ? '✅ <b>Medaf Bot updated!</b> You\u2019re on the latest version.\n\nSend a SHEIN product link to place your order.'
+        : 'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.';
+      await ctx.reply(intro, {
+        parse_mode: refreshed ? 'HTML' : undefined,
+        ...this.stickyUserReplyKeyboard(),
+      });
+      return;
+    }
+    if (!reseller.fullName) {
+      await this.askForName(ctx);
+    } else if (!reseller.phoneNumber) {
+      await this.askForPhone(ctx);
+    } else {
+      await ctx.reply(
+        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
+        this.stickyUserReplyKeyboard(),
+      );
+    }
   }
 
   private async replyMyOrders(ctx: Context): Promise<void> {
@@ -2577,7 +2605,7 @@ export class BotUpdate {
     const orders = await this.orders.findByResellerId(reseller.id);
     await ctx.reply(this.buildMyOrdersMessage(orders), {
       parse_mode: 'HTML',
-      ...this.myOrdersKeyboard(),
+      ...this.stickyUserReplyKeyboard(),
     });
   }
 
