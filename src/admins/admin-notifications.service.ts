@@ -6,6 +6,7 @@ import { formatGmtPlus3 } from '../common/date-format';
 import { Order } from '../orders/order.entity';
 import { OrdersService } from '../orders/orders.service';
 import { AdminsService } from './admins.service';
+import { orderApprovalInlineKeyboard } from './order-approval-inline';
 
 @Injectable()
 export class AdminNotificationsService {
@@ -25,10 +26,12 @@ export class AdminNotificationsService {
     if (!full) return;
 
     const message = this.formatNewOrderAlert(full);
+    const keyboard = orderApprovalInlineKeyboard(order.id);
     for (const admin of allAdmins) {
       try {
         await this.bot.telegram.sendMessage(admin.telegramId, message, {
           parse_mode: 'HTML',
+          ...keyboard,
         });
       } catch (err) {
         const e = err as Error;
@@ -60,13 +63,24 @@ export class AdminNotificationsService {
           continue;
         }
 
-        const message = this.formatDigest(since, newOrders);
-        await this.bot.telegram.sendMessage(admin.telegramId, message, {
-          parse_mode: 'HTML',
-        });
+        for (const o of newOrders) {
+          const message = this.formatSingleOrderDigest(o);
+          try {
+            await this.bot.telegram.sendMessage(admin.telegramId, message, {
+              parse_mode: 'HTML',
+              ...orderApprovalInlineKeyboard(o.id),
+            });
+          } catch (err) {
+            const e = err as Error;
+            this.logger.error(
+              `Failed to send digest for order #${o.id} to admin ${admin.id}: ${e.message}`,
+            );
+          }
+        }
+
         await this.admins.updateLastNotified(admin.id, now);
         this.logger.log(
-          `Sent ${newOrders.length} new order(s) awaiting approval to admin ${admin.id}.`,
+          `Sent ${newOrders.length} order(s) awaiting approval to admin ${admin.id}.`,
         );
       } catch (err) {
         const e = err as Error;
@@ -79,7 +93,13 @@ export class AdminNotificationsService {
     order: Awaited<ReturnType<OrdersService['findByIdWithReseller']>>,
   ): string {
     if (!order) return '';
-    const r = order.reseller;
+    return this.formatSingleOrderDigest(order);
+  }
+
+  private formatSingleOrderDigest(order: Order): string {
+    const r = (order as unknown as {
+      reseller?: { fullName?: string | null; phoneNumber?: string | null };
+    }).reseller;
     const name = this.escapeHtml(r?.fullName || 'unknown');
     const phone = this.escapeHtml(r?.phoneNumber || '');
     const title = this.escapeHtml((order.productTitle || '').slice(0, 60));
@@ -91,6 +111,14 @@ export class AdminNotificationsService {
     const usdTail = this.formatUsdTail(order);
     const priceLine = usdTail ? `${priceBase} ${usdTail}` : priceBase;
 
+    const variantParts: string[] = [];
+    if (order.size) variantParts.push(order.size);
+    if (order.color) variantParts.push(order.color);
+    if (order.quantity > 1) variantParts.push(`×${order.quantity}`);
+    const variant = variantParts.length
+      ? this.escapeHtml(variantParts.join(' · '))
+      : null;
+
     const lines = [
       `<b>🆕 New order awaiting approval #${order.id}</b>`,
       '',
@@ -98,55 +126,10 @@ export class AdminNotificationsService {
       `Submitted: ${this.escapeHtml(formatGmtPlus3(order.createdAt))}`,
       `By: ${name}${phone ? ' (' + phone + ')' : ''}`,
     ];
+    if (variant) lines.push(`Variant: ${variant}`);
     if (order.link) {
       lines.push(`<a href="${this.escapeHtml(order.link)}">View product</a>`);
     }
-    lines.push('', '<i>Open Admin → Awaiting approval to review.</i>');
-    return lines.join('\n');
-  }
-
-  private formatDigest(since: Date, orders: Awaited<ReturnType<OrdersService['findCreatedSince']>>): string {
-    const sinceStr = formatGmtPlus3(since);
-    const lines: string[] = [
-      `<b>📦 ${orders.length} new order(s) awaiting approval since ${this.escapeHtml(sinceStr)}</b>`,
-      '',
-    ];
-    const previewLimit = 15;
-    for (const o of orders.slice(0, previewLimit)) {
-      const r = (o as unknown as { reseller?: { fullName?: string | null; phoneNumber?: string | null } }).reseller;
-      const name = this.escapeHtml(r?.fullName || 'unknown');
-      const phone = this.escapeHtml(r?.phoneNumber || '');
-      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
-      const statusTag = '⏳';
-
-      const total = o.sellingEtb.toLocaleString('en-US');
-      const priceBase =
-        o.quantity > 1 && o.unitEtb
-          ? `${o.unitEtb.toLocaleString('en-US')} × ${o.quantity} = ${total} ETB`
-          : `${total} ETB`;
-      const usdTail = this.formatUsdTail(o);
-      const priceLine = usdTail ? `${priceBase} ${usdTail}` : priceBase;
-
-      const variantParts: string[] = [];
-      if (o.size) variantParts.push(o.size);
-      if (o.color) variantParts.push(o.color);
-      if (o.quantity > 1) variantParts.push(`×${o.quantity}`);
-      const variant = variantParts.length
-        ? this.escapeHtml(variantParts.join(' · '))
-        : null;
-
-      lines.push(`${statusTag} <b>#${o.id}</b> ${title} — ${priceLine}`);
-      lines.push(`   Submitted: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
-      if (variant) lines.push(`   ${variant}`);
-      lines.push(`   by ${name}${phone ? ' (' + phone + ')' : ''}`);
-      if (o.link) {
-        lines.push(`   <a href="${this.escapeHtml(o.link)}">View product</a>`);
-      }
-    }
-    if (orders.length > previewLimit) {
-      lines.push('', `…and ${orders.length - previewLimit} more.`);
-    }
-    lines.push('', '<i>Open Admin → Awaiting approval to review.</i>');
     return lines.join('\n');
   }
 

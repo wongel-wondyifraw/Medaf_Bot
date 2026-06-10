@@ -4,6 +4,7 @@ import { Action, Command, Ctx, InjectBot, On, Start, Update } from 'nestjs-teleg
 import { Context, Markup, Telegraf } from 'telegraf';
 import { AdminsService } from '../admins/admins.service';
 import { AdminNotificationsService } from '../admins/admin-notifications.service';
+import { orderApprovalInlineKeyboard } from '../admins/order-approval-inline';
 import { AddPriceStateService } from '../admins/add-price-state.service';
 import {
   AdminAuthStateService,
@@ -1069,18 +1070,25 @@ export class BotUpdate {
 
       const from = ctx.from;
       this.logger.log(`Order #${orderId} approved by admin telegramId=${from?.id}`);
-      await this.sendPaymentRequestToReseller(updated, bankAccount, false);
+      await this.sendPaymentRequestToReseller(updated, bankAccount);
       await this.safeAnswer(ctx, `✓ Order #${orderId} approved.`, false);
 
-      const awaiting = await this.orders.findAwaitingApproval();
-      try {
-        await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
-          parse_mode: 'HTML',
-          ...this.approvalKeyboard(awaiting),
-        });
-      } catch (err) {
-        if (this.isMessageNotModifiedError(err)) return;
-        throw err;
+      const feedUpdated = await this.finalizeAdminOrderFeedMessage(
+        ctx,
+        orderId,
+        '✅ <b>Approved</b> — payment request sent to reseller.',
+      );
+      if (!feedUpdated) {
+        const awaiting = await this.orders.findAwaitingApproval();
+        try {
+          await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
+            parse_mode: 'HTML',
+            ...this.approvalKeyboard(awaiting),
+          });
+        } catch (err) {
+          if (this.isMessageNotModifiedError(err)) return;
+          throw err;
+        }
       }
     } catch (err) {
       this.fileLogger.logError('adminApprove', err, { orderId });
@@ -1108,6 +1116,11 @@ export class BotUpdate {
 
     this.adminAuth.setPendingForOrder(from.id, 'adjust-price', orderId);
     await this.safeAnswer(ctx, '', false);
+    await this.finalizeAdminOrderFeedMessage(
+      ctx,
+      orderId,
+      '<i>Enter the correct total ETB price in chat…</i>',
+    );
     await ctx.reply(
       `Enter the correct total selling price in ETB for order #${orderId} (e.g. 3500):`,
     );
@@ -1133,6 +1146,11 @@ export class BotUpdate {
 
     this.adminAuth.setPendingForOrder(from.id, 'reject-reason', orderId);
     await this.safeAnswer(ctx, '', false);
+    await this.finalizeAdminOrderFeedMessage(
+      ctx,
+      orderId,
+      '<i>Reply with rejection reason in chat…</i>',
+    );
     await ctx.reply(`Enter the rejection reason for order #${orderId}:`);
   }
 
@@ -2213,8 +2231,10 @@ export class BotUpdate {
 
     if (updated.sellingEtb < originalEtb) {
       await this.sendDiscountMessageToReseller(updated, originalEtb);
+    } else if (updated.sellingEtb > originalEtb) {
+      await this.sendPriceCorrectionMessageToReseller(updated, originalEtb);
     }
-    await this.sendPaymentRequestToReseller(updated, bankAccount, false);
+    await this.sendPaymentRequestToReseller(updated, bankAccount);
     await ctx.reply(
       `✅ Order #${orderId} price set to ${updated.sellingEtb.toLocaleString('en-US')} ETB. User notified.`,
     );
@@ -2253,21 +2273,30 @@ export class BotUpdate {
     await ctx.reply(`✗ Order #${orderId} rejected. User notified.`);
   }
 
+  private formatDiscountPercent(originalEtb: number, newEtb: number): number | null {
+    if (originalEtb <= 0 || newEtb >= originalEtb) return null;
+    return Math.round(((originalEtb - newEtb) / originalEtb) * 100);
+  }
+
+  private formatPriceCorrectionPercent(originalEtb: number, newEtb: number): number | null {
+    if (originalEtb <= 0 || newEtb <= originalEtb) return null;
+    return Math.round(((newEtb - originalEtb) / originalEtb) * 100);
+  }
+
   private async sendDiscountMessageToReseller(order: Order, originalEtb: number): Promise<void> {
     const fullOrder = await this.orders.findByIdWithReseller(order.id);
     if (!fullOrder?.reseller?.telegramId) return;
 
-    const savings = originalEtb - order.sellingEtb;
+    const discountPct = this.formatDiscountPercent(originalEtb, order.sellingEtb);
+    if (discountPct == null || discountPct <= 0) return;
+
     const lines = [
-      '<b>Good news! Medaf collation adjusted your price.</b>',
+      '<b>Good news!</b>',
       '',
-      `Original: <b>${originalEtb.toLocaleString('en-US')} ETB</b>`,
-      `New: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
+      `Medaf collation issued a <b>${discountPct}%</b> discount on your order.`,
+      '',
+      `Order <b>#${order.id}</b>`,
     ];
-    if (savings > 0) {
-      lines.push(`You save <b>${savings.toLocaleString('en-US')} ETB</b>.`);
-    }
-    lines.push('', `Order <b>#${order.id}</b>`);
 
     try {
       await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, lines.join('\n'), {
@@ -2275,6 +2304,31 @@ export class BotUpdate {
       });
     } catch (err) {
       this.fileLogger.logError('sendDiscountMessage', err, { orderId: order.id });
+    }
+  }
+
+  private async sendPriceCorrectionMessageToReseller(order: Order, originalEtb: number): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    const correctionPct = this.formatPriceCorrectionPercent(originalEtb, order.sellingEtb);
+    if (correctionPct == null || correctionPct <= 0) return;
+
+    const lines = [
+      '<b>A quick note from Medaf collation</b>',
+      '',
+      `After reviewing your order, we applied a <b>${correctionPct}%</b> price correction to reflect the actual cost.`,
+      'Thank you for your understanding.',
+      '',
+      `Order <b>#${order.id}</b>`,
+    ];
+
+    try {
+      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, lines.join('\n'), {
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      this.fileLogger.logError('sendPriceCorrectionMessage', err, { orderId: order.id });
     }
   }
 
@@ -2301,17 +2355,9 @@ export class BotUpdate {
   private async sendPaymentRequestToReseller(
     order: Order,
     bankAccount: string,
-    sendDiscountFirst: boolean,
   ): Promise<void> {
     const fullOrder = await this.orders.findByIdWithReseller(order.id);
     if (!fullOrder?.reseller?.telegramId) return;
-
-    if (sendDiscountFirst) {
-      const originalEtb = order.originalSellingEtb ?? order.sellingEtb;
-      if (order.sellingEtb < originalEtb) {
-        await this.sendDiscountMessageToReseller(order, originalEtb);
-      }
-    }
 
     const downPayment =
       order.downPaymentEtb ?? computeDownPaymentEtb(order.sellingEtb);
@@ -3585,6 +3631,28 @@ export class BotUpdate {
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('editMessage', err);
+    }
+  }
+
+  private async finalizeAdminOrderFeedMessage(
+    ctx: Context,
+    orderId: number,
+    statusLine: string,
+  ): Promise<boolean> {
+    const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+    const currentText = cbMessage?.text || '';
+    if (!currentText.includes(`#${orderId}`) || !currentText.includes('awaiting approval')) {
+      return false;
+    }
+    const cleaned = this.stripStatusLines(currentText);
+    try {
+      await ctx.editMessageText(`${cleaned}\n\n${statusLine}`, { parse_mode: 'HTML' });
+      await ctx.editMessageReplyMarkup(undefined);
+      return true;
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return true;
+      this.fileLogger.logError('finalizeAdminOrderFeed', err, { orderId });
+      return false;
     }
   }
 
