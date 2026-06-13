@@ -16,6 +16,8 @@ export interface CreateOrderInput {
   userUnitUsd: number | null;
   userUnitAed: number | null;
   sellingEtb: number;
+  /** Total margin profit on product cost (all units); excludes delivery/commission. */
+  profitEtb: number | null;
 }
 
 export interface OrdersReport {
@@ -24,6 +26,11 @@ export interface OrdersReport {
   pending: number;
   cancelled: number;
   completed: number;
+  /** Sum of selling_etb for completed (delivered) orders. */
+  totalSalesEtb: number;
+  /** Sum of profit_etb for completed orders (margin on product cost only). */
+  totalProfitEtb: number;
+  /** Sum of selling_etb for all non-cancelled orders (in-flight pipeline). */
   totalRevenueEtb: number;
   last24hCount: number;
   recent: Order[];
@@ -84,7 +91,17 @@ export class OrdersService {
     const order = await this.findById(id);
     if (!order || order.status !== 'awaiting_approval') return null;
     if (!Number.isFinite(newSellingEtb) || newSellingEtb <= 0) return null;
+    const previousSellingEtb = order.sellingEtb;
     order.sellingEtb = Math.round(newSellingEtb);
+    if (
+      order.profitEtb != null &&
+      previousSellingEtb > 0 &&
+      order.profitEtb > 0
+    ) {
+      order.profitEtb = Math.round(
+        order.profitEtb * (order.sellingEtb / previousSellingEtb),
+      );
+    }
     order.downPaymentEtb = computeDownPaymentEtb(order.sellingEtb);
     order.adminApprovedAt = new Date();
     order.status = 'awaiting_payment';
@@ -190,6 +207,20 @@ export class OrdersService {
       .getRawOne<{ total: string }>();
     const totalRevenueEtb = parseInt(revenueRow?.total || '0', 10) || 0;
 
+    const salesRow = await this.repo
+      .createQueryBuilder('o')
+      .select('COALESCE(SUM(o.selling_etb), 0)', 'total')
+      .where("o.status = 'completed'")
+      .getRawOne<{ total: string }>();
+    const totalSalesEtb = parseInt(salesRow?.total || '0', 10) || 0;
+
+    const profitRow = await this.repo
+      .createQueryBuilder('o')
+      .select('COALESCE(SUM(o.profit_etb), 0)', 'total')
+      .where("o.status = 'completed'")
+      .getRawOne<{ total: string }>();
+    const totalProfitEtb = parseInt(profitRow?.total || '0', 10) || 0;
+
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const last24hCount = await this.repo
       .createQueryBuilder('o')
@@ -209,6 +240,8 @@ export class OrdersService {
       pending,
       cancelled,
       completed,
+      totalSalesEtb,
+      totalProfitEtb,
       totalRevenueEtb,
       last24hCount,
       recent,

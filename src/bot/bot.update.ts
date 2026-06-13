@@ -689,6 +689,8 @@ export class BotUpdate {
         userUnitUsd: draft.userUnitUsd,
         userUnitAed: draft.userUnitAed,
         sellingEtb: draft.totalEtb,
+        profitEtb:
+          draft.profitEtb != null ? draft.profitEtb * draft.quantity : null,
       });
 
       this.orderDraft.clearDraft(from.id);
@@ -2939,7 +2941,11 @@ export class BotUpdate {
       `<b>Total orders:</b> ${total}`,
       `✅ Awaiting approval: <b>${report.awaitingApproval}</b>   💳 Awaiting payment: <b>${report.awaitingPayment}</b>`,
       `📦 In progress: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Delivered: <b>${report.completed}</b>`,
-      `💰 Revenue (non-cancelled): <b>${report.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
+      '',
+      '<b>Sales &amp; profit</b> (delivered orders only)',
+      `🛒 Total sales: <b>${report.totalSalesEtb.toLocaleString('en-US')} ETB</b>`,
+      `📈 Total profit: <b>${report.totalProfitEtb.toLocaleString('en-US')} ETB</b> <i>(margin on product cost)</i>`,
+      `💼 Pipeline value (non-cancelled): <b>${report.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
       `🕐 Last 24h: <b>${report.last24hCount}</b> order(s)`,
       '',
       `<b>Recent orders</b> (showing ${report.recent.length})`,

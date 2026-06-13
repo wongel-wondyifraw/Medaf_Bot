@@ -30,6 +30,8 @@ import { UnderwearDubaiFactors1781000000000 } from '../migrations/1781000000000-
 import { DressDubaiFactor1781100000000 } from '../migrations/1781100000000-DressDubaiFactor';
 import { OrderApprovalWorkflow1781200000000 } from '../migrations/1781200000000-OrderApprovalWorkflow';
 import { OrderUserUnitAed1781300000000 } from '../migrations/1781300000000-OrderUserUnitAed';
+import { ResetDataKeepCategories1781400000000 } from '../migrations/1781400000000-ResetDataKeepCategories';
+import { OrderProfitEtb1781500000000 } from '../migrations/1781500000000-OrderProfitEtb';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -69,6 +71,8 @@ export function buildTypeOrmOptions(opts: {
       DressDubaiFactor1781100000000,
       OrderApprovalWorkflow1781200000000,
       OrderUserUnitAed1781300000000,
+      ResetDataKeepCategories1781400000000,
+      OrderProfitEtb1781500000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

@@ -95,6 +95,10 @@ export class Order {
   @Column({ type: 'int', name: 'selling_etb' })
   sellingEtb!: number;
 
+  /** Total margin profit (product cost only, all units). Excludes delivery/commission. */
+  @Column({ type: 'int', nullable: true, name: 'profit_etb' })
+  profitEtb!: number | null;
+
   @Column({ type: 'int', nullable: true, name: 'original_selling_etb' })
   originalSellingEtb!: number | null;
 
