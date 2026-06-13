@@ -29,6 +29,7 @@ import { CategoryAiCreated1780900000000 } from '../migrations/1780900000000-Cate
 import { UnderwearDubaiFactors1781000000000 } from '../migrations/1781000000000-UnderwearDubaiFactors';
 import { DressDubaiFactor1781100000000 } from '../migrations/1781100000000-DressDubaiFactor';
 import { OrderApprovalWorkflow1781200000000 } from '../migrations/1781200000000-OrderApprovalWorkflow';
+import { OrderUserUnitAed1781300000000 } from '../migrations/1781300000000-OrderUserUnitAed';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -67,6 +68,7 @@ export function buildTypeOrmOptions(opts: {
       UnderwearDubaiFactors1781000000000,
       DressDubaiFactor1781100000000,
       OrderApprovalWorkflow1781200000000,
+      OrderUserUnitAed1781300000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

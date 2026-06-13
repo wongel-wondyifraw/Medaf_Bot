@@ -19,6 +19,7 @@ export type PendingAction =
   | 'edit-category-factor-avg'
   | 'edit-category-factor-high'
   | 'edit-rate-aed'
+  | 'edit-rate-aed-etb'
   | 'edit-ceiling'
   | 'edit-final-mult'
   | 'edit-bank-account'

@@ -10,6 +10,7 @@ export const SETTING_KEYS = {
   DELIVERY_ETB: 'delivery_cost_etb',
   USD_TO_ETB: 'usd_to_etb',
   USD_TO_AED: 'usd_to_aed',
+  AED_TO_ETB: 'aed_to_etb',
   PRICING_CEILING_MULTIPLIER: 'pricing_ceiling_multiplier',
   PRICING_FINAL_MULTIPLIER: 'pricing_final_multiplier',
   PAYMENT_BANK_ACCOUNT: 'payment_bank_account',
@@ -36,6 +37,7 @@ export class SettingsService implements OnModuleInit {
         SETTING_KEYS.USD_TO_AED,
         pricing.usdToAed != null ? String(pricing.usdToAed) : null,
       ],
+      [SETTING_KEYS.AED_TO_ETB, pricing.aedToEtb != null ? String(pricing.aedToEtb) : null],
       [
         SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
         String(pricing.ceilingMultiplier),

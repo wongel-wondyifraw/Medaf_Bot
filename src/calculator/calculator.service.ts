@@ -105,22 +105,22 @@ export class CalculatorService {
   }
 
   async resolveAedToEtb(): Promise<number | null> {
-    const usdToEtb = await this.resolveUsdToEtb();
-    const usdToAed = await this.resolveUsdToAed();
-    if (!usdToEtb || !usdToAed) return null;
-    return usdToEtb / usdToAed;
+    const pricing = this.config.get('pricing', { infer: true });
+    const db = await this.settings.getNumber(SETTING_KEYS.AED_TO_ETB, 0);
+    const aedToEtb = db > 0 ? db : pricing.aedToEtb;
+    return aedToEtb && aedToEtb > 0 ? aedToEtb : null;
   }
 
   async priceFromAed(input: PriceFromAedInput): Promise<OrderTotal> {
-    const usdToEtb = await this.resolveUsdToEtb();
-    if (!usdToEtb) {
+    const aedToEtb = await this.resolveAedToEtb();
+    if (!aedToEtb) {
       throw new Error(
-        'No ETB exchange rate configured. Set USD_TO_ETB from the admin panel or in .env.',
+        'No AED→ETB rate configured. Set AED_TO_ETB from the admin panel or in .env.',
       );
     }
 
     const usdToAed = await this.resolveUsdToAed();
-    const etbToAed = usdToAed / usdToEtb;
+    const etbToAed = 1 / aedToEtb;
 
     const decision = runAedDirectPricing({
       dubaiAed: input.dubaiAed,
@@ -133,7 +133,7 @@ export class CalculatorService {
 
     this.logger.log(
       `Priced "${input.categoryName ?? 'unknown'}" ${input.dubaiAed} AED → ` +
-        `${decision.totalEtb} ETB (margin ${decision.marginPercent}%)`,
+        `${decision.totalEtb} ETB (margin ${decision.marginPercent}%, rate ${aedToEtb})`,
     );
 
     return {
@@ -142,7 +142,7 @@ export class CalculatorService {
       unitEtbPerUnit: decision.unitEtbPerUnit,
       deliveryEtb: input.deliveryEtb,
       marginPercent: decision.marginPercent,
-      rateUsed: usdToEtb,
+      rateUsed: aedToEtb,
       usdToAed,
       fromCurrency: 'AED',
       matchedCategory: input.categoryName,

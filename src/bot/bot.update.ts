@@ -938,6 +938,16 @@ export class BotUpdate {
     await ctx.reply('Enter new USD → AED rate, e.g. 3.67:');
   }
 
+  @Action('admin:edit:rate-aed-etb')
+  async onEditRateAedToEtb(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const from = ctx.from;
+    if (!from) return;
+    this.adminAuth.setPending(from.id, 'edit-rate-aed-etb');
+    await this.safeAnswer(ctx, '', false);
+    await ctx.reply('Enter new AED → ETB rate, e.g. 45:');
+  }
+
   @Action('admin:edit:ceiling')
   async onEditCeiling(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -1670,6 +1680,14 @@ export class BotUpdate {
           suffix: '',
         });
         break;
+      case 'edit-rate-aed-etb':
+        await this.handleSettingValue(ctx, userId, SETTING_KEYS.AED_TO_ETB, text, {
+          min: 0.01,
+          max: 10_000,
+          label: 'AED → ETB rate',
+          suffix: '',
+        });
+        break;
       case 'edit-ceiling':
         await this.handleSettingValue(
           ctx,
@@ -2011,8 +2029,8 @@ export class BotUpdate {
     const updated = await this.applyUserPrice(userId, draft, parsed);
     if (!updated) {
       await ctx.reply(
-        'Could not price this order — exchange rates are not configured. ' +
-          'An admin needs to set USD→ETB and USD→AED under Settings.',
+        'Could not price this order — AED→ETB rate is not configured. ' +
+          'An admin needs to set it under Settings → AED→ETB.',
       );
       return;
     }
@@ -3123,7 +3141,7 @@ export class BotUpdate {
       '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       `• USD → AED: <b>${await this.formatUsdToAedSetting()}</b>`,
-      `• AED → ETB: <b>${aedToEtb != null ? aedToEtb.toFixed(2) : 'not set'}</b> <i>(derived from USD rates)</i>`,
+      `• AED → ETB: <b>${aedToEtb != null ? aedToEtb.toFixed(2) : 'not set'}</b>`,
       `• Price ceiling: <b>${ceiling.toFixed(2)}×</b> (HIGH factor allowed up to <b>${ceilingPct}%</b> above anchor)`,
       '',
       '<b>Payments</b>',
@@ -3152,7 +3170,10 @@ export class BotUpdate {
         Markup.button.callback('✏️ Fallback delivery', 'admin:edit:delivery'),
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
-      [Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed')],
+      [
+        Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed'),
+        Markup.button.callback('✏️ AED→ETB', 'admin:edit:rate-aed-etb'),
+      ],
       [Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling')],
       [Markup.button.callback('✏️ Bank account', 'admin:edit:bank-account')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
