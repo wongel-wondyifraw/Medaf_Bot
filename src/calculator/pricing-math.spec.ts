@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  applyMarginEtb,
+  convertAedToEtb,
   resolveDynamicMarginPercent,
   resolveUsdBandDubaiFactor,
+  roundEtb,
   runAedDirectPricing,
   runThreeFactorDecision,
   runUsdBandDecision,
@@ -23,6 +26,13 @@ describe('resolveDynamicMarginPercent', () => {
 
   it('returns 15% above 15,000 ETB', () => {
     assert.equal(resolveDynamicMarginPercent(15001), 15);
+  });
+});
+
+describe('integer ETB helpers', () => {
+  it('converts AED with the direct rate', () => {
+    assert.equal(convertAedToEtb(66.88, 50), 3344);
+    assert.equal(applyMarginEtb(3344, 30), 4347);
   });
 });
 
@@ -61,31 +71,41 @@ describe('resolveUsdBandDubaiFactor', () => {
 });
 
 describe('runAedDirectPricing', () => {
-  const usdToEtb = 200;
-  const usdToAed = 3.67;
-  const etbToAed = usdToAed / usdToEtb;
-  const deliveryEtb = 800;
-
-  it('converts AED to ETB, applies margin, then adds delivery', () => {
+  it('converts AED to ETB, applies margin, then adds delivery as integers', () => {
     const r = runAedDirectPricing({
-      dubaiAed: 3.67,
-      deliveryEtb,
-      etbToAed,
+      dubaiAed: 1,
+      deliveryEtb: 800,
+      aedToEtb: 200,
       quantity: 1,
     });
-    assert.ok(Math.abs(r.dubaiCostEtb - 200) < 0.01);
+    assert.equal(r.dubaiCostEtb, 200);
     assert.equal(r.marginPercent, 30);
-    assert.ok(Math.abs(r.sellEtb - 260) < 0.01);
-    assert.ok(Math.abs(r.profitEtb - 60) < 0.01);
+    assert.equal(r.sellEtb, 260);
+    assert.equal(r.profitEtb, 60);
     assert.equal(r.unitEtbPerUnit, 1060);
     assert.equal(r.totalEtb, 1060);
   });
 
+  it('matches the 66.88 AED trouser example at rate 50 with Trousers delivery', () => {
+    const r = runAedDirectPricing({
+      dubaiAed: 66.88,
+      deliveryEtb: 650,
+      aedToEtb: 50,
+      quantity: 1,
+    });
+    assert.equal(r.dubaiCostEtb, 3344);
+    assert.equal(r.marginPercent, 30);
+    assert.equal(r.sellEtb, 4347);
+    assert.equal(r.profitEtb, 1003);
+    assert.equal(r.unitEtbPerUnit, 4997);
+    assert.equal(r.totalEtb, 4997);
+  });
+
   it('multiplies the per-unit total by quantity last', () => {
     const r = runAedDirectPricing({
-      dubaiAed: 3.67,
+      dubaiAed: 1,
       deliveryEtb: 500,
-      etbToAed,
+      aedToEtb: 200,
       quantity: 3,
     });
     assert.equal(r.unitEtbPerUnit, 760);
@@ -115,6 +135,8 @@ describe('runUsdBandDecision', () => {
     assert.equal(r.reason, 'usd_band');
     assert.equal(r.factorUsed, USD_BAND_FACTOR_MID);
     assert.ok(r.totalEtb >= 3180 && r.totalEtb <= 3200);
+    assert.equal(r.totalEtb, roundEtb(r.totalEtb));
+    assert.equal(r.unitEtbPerUnit, roundEtb(r.unitEtbPerUnit));
   });
 
   it('applies the same mid factor for $12 (Dress delivery)', () => {
@@ -189,17 +211,16 @@ describe('runThreeFactorDecision', () => {
 
   it('excludes delivery from margin base (Law 1)', () => {
     const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
-    const expectedSell = result.dubaiCostEtb * (1 + result.marginPercent / 100);
-    assert.ok(Math.abs(result.sellEtb - expectedSell) < 0.01);
-    assert.ok(result.unitEtbPerUnit >= result.sellEtb + deliveryEtb - 1);
+    assert.equal(result.sellEtb, applyMarginEtb(result.dubaiCostEtb, result.marginPercent));
+    assert.equal(result.unitEtbPerUnit, result.sellEtb + roundEtb(deliveryEtb));
   });
 
   it('clamps unit price to the USD × rate floor for weak factors', () => {
     const result = decide({ low: 0.2, avg: 0.3, high: 0.35 });
     assert.equal(result.floored, true);
-    assert.equal(result.unitEtbPerUnit, Math.ceil(baseEtbRef));
+    assert.equal(result.unitEtbPerUnit, roundEtb(baseEtbRef));
     assert.ok(result.unitEtbPerUnit >= baseEtbRef);
-    assert.equal(result.totalEtb, Math.ceil(baseEtbRef));
+    assert.equal(result.totalEtb, roundEtb(baseEtbRef));
   });
 
   it('does not clamp when the price already clears the floor', () => {

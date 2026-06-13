@@ -3136,7 +3136,7 @@ export class BotUpdate {
       '   – &lt; 3,000 ETB → <b>30%</b>',
       '   – 3,000–10,000 ETB → <b>20%</b>',
       '   – &gt; 10,000 ETB → <b>15%</b>',
-      '• Totals are rounded <b>up</b> after multiplying by quantity.',
+      '• All ETB amounts are rounded to the nearest whole birr at each step.',
       `• Default delivery fallback: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
       '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,

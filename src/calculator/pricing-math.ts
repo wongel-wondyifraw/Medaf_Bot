@@ -8,10 +8,60 @@
  * 30% tier instead of silently dropping to 20% (especially at higher FX rates).
  */
 export function resolveDynamicMarginPercent(dubaiCostEtb: number): number {
-  if (!Number.isFinite(dubaiCostEtb) || dubaiCostEtb <= 0) return 30;
-  if (dubaiCostEtb < 5000) return 30;
-  if (dubaiCostEtb <= 15000) return 20;
+  const cost = roundEtb(dubaiCostEtb);
+  if (!Number.isFinite(cost) || cost <= 0) return 30;
+  if (cost < 5000) return 30;
+  if (cost <= 15000) return 20;
   return 15;
+}
+
+/** Round to the nearest whole ETB (all customer-facing amounts are integers). */
+export function roundEtb(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value);
+}
+
+/** Apply a margin (%) to an integer Dubai cost in ETB. */
+export function applyMarginEtb(dubaiCostEtb: number, marginPercent: number): number {
+  const cost = roundEtb(dubaiCostEtb);
+  return roundEtb((cost * (100 + marginPercent)) / 100);
+}
+
+/** Convert AED → ETB using the direct admin rate (ETB per 1 AED). */
+export function convertAedToEtb(aed: number, aedToEtb: number): number {
+  return roundEtb(aed * aedToEtb);
+}
+
+/** Law 1 unit total: margin on product cost only, then add delivery, then qty. */
+export function finalizeLaw1UnitTotalEtb(
+  dubaiCostEtb: number,
+  deliveryEtb: number,
+  quantity: number,
+): {
+  marginPercent: number;
+  dubaiCostEtb: number;
+  sellEtb: number;
+  profitEtb: number;
+  deliveryEtb: number;
+  unitEtbPerUnit: number;
+  totalEtb: number;
+} {
+  const cost = roundEtb(dubaiCostEtb);
+  const delivery = roundEtb(deliveryEtb);
+  const marginPercent = resolveDynamicMarginPercent(cost);
+  const sellEtb = applyMarginEtb(cost, marginPercent);
+  const profitEtb = sellEtb - cost;
+  const unitEtbPerUnit = sellEtb + delivery;
+  const qty = Math.max(1, Math.round(quantity));
+  return {
+    marginPercent,
+    dubaiCostEtb: cost,
+    sellEtb,
+    profitEtb,
+    deliveryEtb: delivery,
+    unitEtbPerUnit,
+    totalEtb: unitEtbPerUnit * qty,
+  };
 }
 
 export type FactorTier = 'low' | 'high' | 'avg';
@@ -99,21 +149,23 @@ interface InternalStepInput {
   quantity: number;
 }
 
-function aedToEtb(aed: number, etbToAed: number): number {
-  return etbToAed > 0 ? aed / etbToAed : 0;
+function aedToEtbViaInverse(aed: number, etbToAed: number): number {
+  return etbToAed > 0 ? convertAedToEtb(aed, 1 / etbToAed) : 0;
 }
 
 function computeStep(input: InternalStepInput): StepPricingSnapshot {
   const dubaiCostAed = input.baseAed * input.factor;
-  const dubaiCostEtb = aedToEtb(dubaiCostAed, input.etbToAed);
+  const dubaiCostEtb = aedToEtbViaInverse(dubaiCostAed, input.etbToAed);
   const marginPercent = resolveDynamicMarginPercent(dubaiCostEtb);
-  const sellAed = dubaiCostAed * (1 + marginPercent / 100);
-  const profitAed = sellAed - dubaiCostAed;
-  const totalAedPerUnit = sellAed + input.deliveryAed;
-  const sellEtb = aedToEtb(sellAed, input.etbToAed);
-  const profitEtb = aedToEtb(profitAed, input.etbToAed);
-  const unitEtbPerUnit = Math.ceil(aedToEtb(totalAedPerUnit, input.etbToAed));
-  const totalEtb = Math.ceil(unitEtbPerUnit * input.quantity);
+  const sellEtb = applyMarginEtb(dubaiCostEtb, marginPercent);
+  const profitEtb = sellEtb - dubaiCostEtb;
+  const deliveryEtb = roundEtb(input.deliveryEtb);
+  const sellAed = sellEtb * input.etbToAed;
+  const profitAed = profitEtb * input.etbToAed;
+  const deliveryAed = deliveryEtb * input.etbToAed;
+  const totalAedPerUnit = sellAed + deliveryAed;
+  const unitEtbPerUnit = sellEtb + deliveryEtb;
+  const totalEtb = unitEtbPerUnit * input.quantity;
 
   return {
     factorUsed: input.factor,
@@ -124,7 +176,7 @@ function computeStep(input: InternalStepInput): StepPricingSnapshot {
     sellEtb,
     profitAed,
     profitEtb,
-    deliveryAed: input.deliveryAed,
+    deliveryAed,
     totalAedPerUnit,
     unitEtbPerUnit,
     totalEtb,
@@ -140,12 +192,12 @@ function finalizeDecision(
   reason: FactorReason,
   input: ThreeFactorDecisionInput,
 ): ThreeFactorDecisionResult {
-  const floorEtb = Math.max(0, input.baseEtbRef);
+  const floorEtb = roundEtb(input.baseEtbRef);
 
   let unitEtbPerUnit = snapshot.unitEtbPerUnit;
   let floored = false;
   if (unitEtbPerUnit < floorEtb) {
-    unitEtbPerUnit = Math.ceil(floorEtb);
+    unitEtbPerUnit = floorEtb;
     floored = true;
   }
 
@@ -163,7 +215,7 @@ function finalizeDecision(
   }
 
   const sellEtb = unitEtbPerUnit - input.deliveryEtb;
-  const profitEtb = sellEtb - snapshot.dubaiCostEtb;
+  const profitEtb = sellEtb - roundEtb(snapshot.dubaiCostEtb);
   const sellAed = sellEtb * input.etbToAed;
   const profitAed = profitEtb * input.etbToAed;
 
@@ -175,7 +227,7 @@ function finalizeDecision(
     sellAed,
     profitAed,
     unitEtbPerUnit,
-    totalEtb: Math.ceil(unitEtbPerUnit * input.quantity),
+    totalEtb: unitEtbPerUnit * input.quantity,
     floored,
   };
 }
@@ -317,8 +369,8 @@ export interface AedDirectPricingInput {
   /** Verified Dubai unit price in AED (from SHEIN UAE location). */
   dubaiAed: number;
   deliveryEtb: number;
-  /** AED per ETB (= USD_TO_AED / USD_TO_ETB). */
-  etbToAed: number;
+  /** ETB per 1 AED (admin AED→ETB rate). */
+  aedToEtb: number;
   quantity: number;
 }
 
@@ -339,36 +391,35 @@ export interface AedDirectPricingResult {
 export function runAedDirectPricing(
   input: AedDirectPricingInput,
 ): AedDirectPricingResult {
-  const dubaiCostAed = input.dubaiAed;
-  const dubaiCostEtb = aedToEtb(dubaiCostAed, input.etbToAed);
-  const marginPercent = resolveDynamicMarginPercent(dubaiCostEtb);
-  const sellEtb = dubaiCostEtb * (1 + marginPercent / 100);
-  const profitEtb = sellEtb - dubaiCostEtb;
-  const unitEtbPerUnit = Math.ceil(sellEtb + input.deliveryEtb);
-  const totalEtb = Math.ceil(unitEtbPerUnit * input.quantity);
+  const priced = finalizeLaw1UnitTotalEtb(
+    convertAedToEtb(input.dubaiAed, input.aedToEtb),
+    input.deliveryEtb,
+    input.quantity,
+  );
 
   return {
-    marginPercent,
-    dubaiCostAed,
-    dubaiCostEtb,
-    sellEtb,
-    profitEtb,
-    unitEtbPerUnit,
-    totalEtb,
+    marginPercent: priced.marginPercent,
+    dubaiCostAed: input.dubaiAed,
+    dubaiCostEtb: priced.dubaiCostEtb,
+    sellEtb: priced.sellEtb,
+    profitEtb: priced.profitEtb,
+    unitEtbPerUnit: priced.unitEtbPerUnit,
+    totalEtb: priced.totalEtb,
   };
 }
 
 /** Law 1 — profit on Dubai product cost only; delivery added after; qty last. */
 export function applyLaw1Pricing(input: Law1PricingInput): Law1PricingResult {
-  const marginPercent = resolveDynamicMarginPercent(input.dubaiCostEtb);
-  const sellingEtbPerUnit = input.dubaiCostEtb * (1 + marginPercent / 100);
-  const finalEtbPerUnit = sellingEtbPerUnit + input.deliveryEtb;
-  const totalEtb = Math.ceil(finalEtbPerUnit * input.quantity);
+  const priced = finalizeLaw1UnitTotalEtb(
+    input.dubaiCostEtb,
+    input.deliveryEtb,
+    input.quantity,
+  );
 
   return {
-    marginPercent,
-    sellingEtbPerUnit,
-    finalEtbPerUnit,
-    totalEtb,
+    marginPercent: priced.marginPercent,
+    sellingEtbPerUnit: priced.sellEtb,
+    finalEtbPerUnit: priced.unitEtbPerUnit,
+    totalEtb: priced.totalEtb,
   };
 }

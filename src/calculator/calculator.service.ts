@@ -119,16 +119,14 @@ export class CalculatorService {
       );
     }
 
-    const usdToAed = await this.resolveUsdToAed();
-    const etbToAed = 1 / aedToEtb;
-
     const decision = runAedDirectPricing({
       dubaiAed: input.dubaiAed,
       deliveryEtb: input.deliveryEtb,
-      etbToAed,
+      aedToEtb,
       quantity: input.quantity,
     });
 
+    const usdToAed = await this.resolveUsdToAed();
     const impliedEthUsd = input.dubaiAed / usdToAed;
 
     this.logger.log(
