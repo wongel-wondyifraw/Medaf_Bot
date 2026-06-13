@@ -45,7 +45,20 @@ export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
   private readonly myOrdersButtonLabel = '📋 My orders';
   private readonly updateButtonLabel = '🔄 Update';
-  private readonly pendingOrdersButtonLabel = '✅ Pending orders';
+  private readonly adminApprovalsButtonLabel = '✅ Approvals';
+  private readonly adminOrdersButtonLabel = '📋 Orders';
+
+  private readonly adminOrderStatusCategories: Array<{
+    status: Order['status'];
+    label: string;
+    emoji: string;
+  }> = [
+    { status: 'awaiting_approval', label: 'Awaiting approval', emoji: '✅' },
+    { status: 'awaiting_payment', label: 'Awaiting payment', emoji: '💳' },
+    { status: 'pending', label: 'In progress', emoji: '📦' },
+    { status: 'completed', label: 'Delivered', emoji: '✓' },
+    { status: 'cancelled', label: 'Cancelled', emoji: '✗' },
+  ];
 
   constructor(
     @InjectBot() private readonly bot: Telegraf,
@@ -296,12 +309,21 @@ export class BotUpdate {
       return;
     }
 
-    if (text === this.pendingOrdersButtonLabel) {
+    if (text === this.adminApprovalsButtonLabel) {
       if (!(await this.admins.isAdmin(from.id))) {
         await ctx.reply('Admin access required. Send /admin first.');
         return;
       }
-      await this.replyAdminDeliveryQueue(ctx);
+      await this.replyAdminApprovals(ctx);
+      return;
+    }
+
+    if (text === this.adminOrdersButtonLabel) {
+      if (!(await this.admins.isAdmin(from.id))) {
+        await ctx.reply('Admin access required. Send /admin first.');
+        return;
+      }
+      await this.replyAdminOrdersHub(ctx);
       return;
     }
 
@@ -312,7 +334,7 @@ export class BotUpdate {
     }
 
     // Order-draft text routing. Each step that expects free-form text from
-    // the user (custom quantity, unit USD price) is dispatched here before
+    // the user (custom quantity, unit AED price) is dispatched here before
     // any of the registration / SHEIN-link checks below.
     const activeDraft = this.orderDraft.getDraft(from.id);
     if (activeDraft && activeDraft.step === 'preferences') {
@@ -439,7 +461,7 @@ export class BotUpdate {
 
     const totals = await this.calculator.calculateOrderTotalEtb(synthesized);
 
-    // unitEtb/sellingEtb/totalEtb stay at 0 until the user enters the USD
+    // unitEtb/sellingEtb/totalEtb stay at 0 until the user enters the AED
     // price on the price step — the calculator will recompute them then.
     const draft = this.orderDraft.setDraft(userId, {
       productId: resolvedProductId,
@@ -603,25 +625,11 @@ export class BotUpdate {
       await this.safeAnswer(ctx, 'Not on the price step.', true);
       return;
     }
-    if (draft.scrapedUnitUsd == null) {
-      await this.safeAnswer(
-        ctx,
-        'No scraped price to accept. Type the unit price in USD.',
-        true,
-      );
-      return;
-    }
-    const updated = await this.applyUserPrice(from.id, draft, draft.scrapedUnitUsd);
-    if (!updated) {
-      await this.safeAnswer(
-        ctx,
-        'Pricing is not configured (USD→ETB missing). Please contact an admin.',
-        true,
-      );
-      return;
-    }
-    await this.safeAnswer(ctx, 'Using scraped price.', false);
-    await this.editDraftMessage(ctx, updated);
+    await this.safeAnswer(
+      ctx,
+      'Enter the Dubai AED price from SHEIN (UAE location).',
+      true,
+    );
   }
 
   @Action('ord:cancel')
@@ -679,6 +687,7 @@ export class BotUpdate {
         unitEtb: draft.unitEtb,
         scrapedUnitUsd: draft.scrapedUnitUsd,
         userUnitUsd: draft.userUnitUsd,
+        userUnitAed: draft.userUnitAed,
         sellingEtb: draft.totalEtb,
       });
 
@@ -688,7 +697,7 @@ export class BotUpdate {
         `Order #${order.id} placed by reseller ${reseller.id} (${reseller.fullName}) ` +
           `productId=${draft.productId} size=${draft.selectedSize ?? '-'} color=${draft.selectedColor ?? '-'} ` +
           `qty=${draft.quantity} unit=${draft.unitEtb} total=${draft.totalEtb} ` +
-          `scrapedUsd=${draft.scrapedUnitUsd ?? '-'} userUsd=${draft.userUnitUsd ?? '-'}`,
+          `userAed=${draft.userUnitAed ?? '-'}`,
       );
 
       const summary =
@@ -944,21 +953,6 @@ export class BotUpdate {
     );
   }
 
-  @Action('admin:edit:final-mult')
-  async onEditFinalMult(@Ctx() ctx: Context) {
-    if (!(await this.requireAdmin(ctx))) return;
-    const from = ctx.from;
-    if (!from) return;
-    this.adminAuth.setPending(from.id, 'edit-final-mult');
-    await this.safeAnswer(ctx, '', false);
-    await ctx.reply(
-      'Enter the final price uplift multiplier applied to every price.\n\n' +
-        'Examples: <code>1.00</code> = no change, <code>1.10</code> = +10%, ' +
-        '<code>1.15</code> = +15%.',
-      { parse_mode: 'HTML' },
-    );
-  }
-
   @Command('addprice')
   async onAddPriceCommand(@Ctx() ctx: Context) {
     const from = ctx.from;
@@ -1061,17 +1055,27 @@ export class BotUpdate {
   @Action('admin:pending')
   async onAdminPending(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
-    await this.safeAnswer(ctx, 'Loading delivery queue...', false);
-    try {
-      const pending = await this.orders.findPending();
-      await ctx.editMessageText(this.buildPendingMessage(pending), {
-        parse_mode: 'HTML',
-        ...this.pendingKeyboard(pending),
-      });
-    } catch (err) {
-      if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminPending', err);
+    await this.showAdminOrdersByStatus(ctx, 'pending', 'edit');
+  }
+
+  @Action('admin:orders')
+  async onAdminOrdersHub(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    await this.safeAnswer(ctx, 'Loading orders...', false);
+    await this.showAdminOrdersHub(ctx, 'edit');
+  }
+
+  @Action(/^admin:orders:([a-z_]+)$/)
+  async onAdminOrdersByStatus(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const status = (match?.[1] || '') as Order['status'];
+    if (!this.isAdminOrderStatus(status)) {
+      await this.safeAnswer(ctx, 'Invalid order category.', true);
+      return;
     }
+    await this.safeAnswer(ctx, 'Loading...', false);
+    await this.showAdminOrdersByStatus(ctx, status, 'edit');
   }
 
   @Action('admin:approval')
@@ -1248,12 +1252,15 @@ export class BotUpdate {
         await this.safeAnswer(ctx, `✓ Order #${orderId} marked done.`, false);
       }
 
-      const pending = await this.orders.findPending();
+      const pending = await this.orders.findByStatus('pending');
       try {
-        await ctx.editMessageText(this.buildPendingMessage(pending), {
-          parse_mode: 'HTML',
-          ...this.pendingKeyboard(pending),
-        });
+        await ctx.editMessageText(
+          this.buildAdminOrdersByStatusMessage(pending, 'pending'),
+          {
+            parse_mode: 'HTML',
+            ...this.adminOrdersByStatusKeyboard(pending, 'pending'),
+          },
+        );
       } catch (err) {
         if (this.isMessageNotModifiedError(err)) return;
         throw err;
@@ -1677,20 +1684,6 @@ export class BotUpdate {
           },
         );
         break;
-      case 'edit-final-mult':
-        await this.handleSettingValue(
-          ctx,
-          userId,
-          SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
-          text,
-          {
-            min: 1,
-            max: 3,
-            label: 'Final price uplift',
-            suffix: '×',
-          },
-        );
-        break;
       case 'edit-category-factor':
         await this.handleEditCategoryFactorLow(ctx, userId, text);
         break;
@@ -2001,29 +1994,25 @@ export class BotUpdate {
       return;
     }
 
-    const parsed = this.parseUsdInput(trimmed);
+    const parsed = this.parseAedInput(trimmed);
     if (parsed == null) {
       await ctx.reply(
-        'That does not look like a price. Send a number like <code>8.09</code>, ' +
-          'tap "Use scraped", or send <code>cancel</code>.',
+        'That does not look like a price. Send a number like <code>35</code> or <code>35.50</code>, ' +
+          'or send <code>cancel</code>.',
         { parse_mode: 'HTML' },
       );
       return;
     }
-    if (parsed <= 0 || parsed > 100_000) {
-      await ctx.reply('Price must be between 0.01 and 100,000 USD.');
+    if (parsed <= 0 || parsed > 1_000_000) {
+      await ctx.reply('Price must be between 0.01 and 1,000,000 AED.');
       return;
     }
 
     const updated = await this.applyUserPrice(userId, draft, parsed);
     if (!updated) {
-      // Two failure modes converge here: the draft may have expired (rare —
-      // we just fetched it 0 ms ago) or the `usd_to_etb` settings row is
-      // missing/invalid. The latter is the more common operational issue, so
-      // the message names it explicitly.
       await ctx.reply(
-        'Could not price this order — USD→ETB rate is not configured. ' +
-          'An admin needs to set it under Settings → USD→ETB.',
+        'Could not price this order — exchange rates are not configured. ' +
+          'An admin needs to set USD→ETB and USD→AED under Settings.',
       );
       return;
     }
@@ -2042,19 +2031,19 @@ export class BotUpdate {
   private async applyUserPrice(
     userId: number,
     draft: OrderDraft,
-    userUnitUsd: number,
+    userUnitAed: number,
   ): Promise<OrderDraft | null> {
     try {
-      const priced = await this.calculator.priceFromEthUsd({
-        ethUsd: userUnitUsd,
-        productId: draft.productId,
+      const priced = await this.calculator.priceFromAed({
+        dubaiAed: userUnitAed,
         categoryName: draft.categoryName,
         deliveryEtb: draft.deliveryEtb,
         quantity: draft.quantity,
       });
 
       return this.orderDraft.setUserPrice(userId, {
-        userUnitUsd,
+        userUnitAed,
+        userUnitUsd: null,
         unitEtb: priced.unitEtbPerUnit,
         sellingEtb: priced.totalEtb,
         totalEtb: priced.totalEtb,
@@ -2080,9 +2069,17 @@ export class BotUpdate {
     }
   }
 
+  private parseAedInput(raw: string): number | null {
+    const cleaned = raw
+      .replace(/aed/gi, '')
+      .replace(/[$\s]/g, '')
+      .replace(',', '.');
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return null;
+    const num = parseFloat(cleaned);
+    return Number.isFinite(num) ? num : null;
+  }
+
   private parseUsdInput(raw: string): number | null {
-    // Accept "$8.09", "8.09", "8,09" (European decimal). Reject things with
-    // letters or multiple separators.
     const cleaned = raw.replace(/[$\s]/g, '').replace(',', '.');
     if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return null;
     const num = parseFloat(cleaned);
@@ -2556,7 +2553,7 @@ export class BotUpdate {
       : [this.myOrdersButtonLabel];
     const rows: string[][] = [row1];
     if (opts.isAdmin) {
-      rows.push([this.pendingOrdersButtonLabel]);
+      rows.push([this.adminApprovalsButtonLabel, this.adminOrdersButtonLabel]);
     }
     return Markup.keyboard(rows).resize().persistent();
   }
@@ -2570,12 +2567,196 @@ export class BotUpdate {
     return this.buildStickyReplyKeyboard({ includeUpdate, isAdmin });
   }
 
-  private async replyAdminDeliveryQueue(ctx: Context): Promise<void> {
-    const pending = await this.orders.findPending();
-    await ctx.reply(this.buildPendingMessage(pending), {
+  private async replyAdminApprovals(ctx: Context): Promise<void> {
+    const awaiting = await this.orders.findAwaitingApproval();
+    await ctx.reply(this.buildApprovalMessage(awaiting), {
       parse_mode: 'HTML',
-      ...this.pendingKeyboard(pending),
+      ...this.approvalKeyboard(awaiting),
     });
+  }
+
+  private async replyAdminOrdersHub(ctx: Context): Promise<void> {
+    const report = await this.orders.getReport();
+    await ctx.reply(this.buildAdminOrdersHubMessage(report), {
+      parse_mode: 'HTML',
+      ...this.adminOrdersHubKeyboard(report),
+    });
+  }
+
+  private async showAdminOrdersHub(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+  ): Promise<void> {
+    const report = await this.orders.getReport();
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminOrdersHubKeyboard(report),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(this.buildAdminOrdersHubMessage(report), payload);
+      } else {
+        await ctx.reply(this.buildAdminOrdersHubMessage(report), payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminOrdersHub', err);
+    }
+  }
+
+  private async showAdminOrdersByStatus(
+    ctx: Context,
+    status: Order['status'],
+    mode: 'reply' | 'edit',
+  ): Promise<void> {
+    const orders = await this.orders.findByStatus(status);
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminOrdersByStatusKeyboard(orders, status),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(
+          this.buildAdminOrdersByStatusMessage(orders, status),
+          payload,
+        );
+      } else {
+        await ctx.reply(this.buildAdminOrdersByStatusMessage(orders, status), payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminOrdersByStatus', err, { status });
+    }
+  }
+
+  private isAdminOrderStatus(status: string): status is Order['status'] {
+    return this.adminOrderStatusCategories.some((c) => c.status === status);
+  }
+
+  private adminOrderStatusCount(
+    report: Awaited<ReturnType<OrdersService['getReport']>>,
+    status: Order['status'],
+  ): number {
+    switch (status) {
+      case 'awaiting_approval':
+        return report.awaitingApproval;
+      case 'awaiting_payment':
+        return report.awaitingPayment;
+      case 'pending':
+        return report.pending;
+      case 'completed':
+        return report.completed;
+      case 'cancelled':
+        return report.cancelled;
+      default:
+        return 0;
+    }
+  }
+
+  private adminOrderStatusTitle(status: Order['status']): string {
+    const match = this.adminOrderStatusCategories.find((c) => c.status === status);
+    return match ? `${match.emoji} ${match.label}` : status;
+  }
+
+  private buildAdminOrdersHubMessage(
+    report: Awaited<ReturnType<OrdersService['getReport']>>,
+  ): string {
+    const lines = [
+      '<b>📋 Orders</b>',
+      '',
+      'Choose a category to view orders:',
+    ];
+    for (const category of this.adminOrderStatusCategories) {
+      const count = this.adminOrderStatusCount(report, category.status);
+      lines.push(`• ${category.emoji} <b>${category.label}</b>: ${count}`);
+    }
+    lines.push('', '<i>Tap a category below.</i>');
+    return lines.join('\n');
+  }
+
+  private adminOrdersHubKeyboard(
+    report: Awaited<ReturnType<OrdersService['getReport']>>,
+  ) {
+    const rows = this.adminOrderStatusCategories.map((category) => [
+      Markup.button.callback(
+        `${category.emoji} ${category.label} (${this.adminOrderStatusCount(report, category.status)})`,
+        `admin:orders:${category.status}`,
+      ),
+    ]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private buildAdminOrdersByStatusMessage(
+    orders: Order[],
+    status: Order['status'],
+  ): string {
+    const title = this.adminOrderStatusTitle(status);
+    const lines = [
+      `<b>${title}</b>`,
+      '',
+      `Showing <b>${orders.length}</b> order(s) (most recent first).`,
+    ];
+
+    if (orders.length === 0) {
+      lines.push('', '<i>No orders in this category.</i>');
+      return lines.join('\n');
+    }
+
+    orders.forEach((o, idx) => {
+      const r = (o as unknown as {
+        reseller?: { fullName?: string | null; phoneNumber?: string | null };
+      }).reseller;
+      const name = this.escapeHtml(r?.fullName || 'unknown');
+      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
+      const orderStatus = this.formatStatus(o.status);
+      const titleText = this.escapeHtml((o.productTitle || '').slice(0, 60));
+      lines.push('');
+      lines.push(`<b>Order ${idx + 1}</b>`);
+      lines.push(`  ID:      #${o.id}`);
+      lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
+      lines.push(`  Product: ${titleText}`);
+      const variant = this.formatOrderVariant(o);
+      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
+      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
+      lines.push(`  Name:    ${name}`);
+      lines.push(`  Phone:   ${phone}`);
+      lines.push(`  Status:  ${orderStatus}`);
+      const link = this.formatOrderLink(o);
+      if (link) lines.push(`  Link:    ${link}`);
+    });
+
+    if (status === 'awaiting_approval') {
+      lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
+    } else if (status === 'pending') {
+      lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
+    }
+
+    return lines.join('\n');
+  }
+
+  private adminOrdersByStatusKeyboard(orders: Order[], status: Order['status']) {
+    const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+
+    if (status === 'awaiting_approval') {
+      for (const o of orders) {
+        rows.push([
+          Markup.button.callback(`✓ Approve #${o.id}`, `admin:approve:${o.id}`),
+          Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
+          Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
+        ]);
+      }
+    } else if (status === 'pending') {
+      for (const o of orders) {
+        rows.push([
+          Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
+        ]);
+      }
+    }
+
+    rows.push([Markup.button.callback('← All categories', 'admin:orders')]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
   }
 
   private async handleUserStart(ctx: Context, refreshed: boolean): Promise<void> {
@@ -2683,7 +2864,7 @@ export class BotUpdate {
     });
     if (from) {
       await ctx.reply(
-        'Admin shortcut: tap <b>Pending orders</b> on the bottom bar to open the delivery queue.',
+        'Admin shortcuts: tap <b>Approvals</b> or <b>Orders</b> on the bottom bar.',
         {
           parse_mode: 'HTML',
           ...(await this.stickyReplyKeyboardFor(from.id)),
@@ -2694,11 +2875,11 @@ export class BotUpdate {
 
   private adminMenuKeyboard(telegramId?: number) {
     const rows: ReturnType<typeof Markup.button.callback>[][] = [
+      [Markup.button.callback('📊 Report', 'admin:report')],
       [
-        Markup.button.callback('📊 Report', 'admin:report'),
-        Markup.button.callback('✅ Approval', 'admin:approval'),
+        Markup.button.callback('✅ Approvals', 'admin:approval'),
+        Markup.button.callback('📋 Orders', 'admin:orders'),
       ],
-      [Markup.button.callback('📦 Delivery queue', 'admin:pending')],
     ];
     if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
       rows.push([Markup.button.callback('🩺 Health Report', 'admin:health')]);
@@ -2714,8 +2895,8 @@ export class BotUpdate {
       '',
       'Choose an option:',
       '• <b>Report</b> — order stats and recent orders',
-      '• <b>Approval</b> — review new order requests',
-      '• <b>Delivery queue</b> — mark confirmed orders as delivered',
+      '• <b>Approvals</b> — review new order requests',
+      '• <b>Orders</b> — browse orders by status (approval, payment, in progress, delivered, cancelled)',
       '• <b>Settings</b> — bot config and admin list',
     ];
     if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
@@ -2739,7 +2920,7 @@ export class BotUpdate {
       '',
       `<b>Total orders:</b> ${total}`,
       `✅ Awaiting approval: <b>${report.awaitingApproval}</b>   💳 Awaiting payment: <b>${report.awaitingPayment}</b>`,
-      `📦 Delivery queue: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Completed: <b>${report.completed}</b>`,
+      `📦 In progress: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Delivered: <b>${report.completed}</b>`,
       `💰 Revenue (non-cancelled): <b>${report.totalRevenueEtb.toLocaleString('en-US')} ETB</b>`,
       `🕐 Last 24h: <b>${report.last24hCount}</b> order(s)`,
       '',
@@ -2828,63 +3009,9 @@ export class BotUpdate {
       ]);
     }
     rows.push([
-      Markup.button.callback('📦 Delivery queue', 'admin:pending'),
+      Markup.button.callback('📋 Orders', 'admin:orders'),
       Markup.button.callback('📊 Report', 'admin:report'),
     ]);
-    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
-    return Markup.inlineKeyboard(rows);
-  }
-
-  private buildPendingMessage(
-    pending: Awaited<ReturnType<OrdersService['findPending']>>,
-  ): string {
-    const lines = [
-      '<b>📦 Delivery queue</b>',
-      '',
-      `Awaiting delivery: <b>${pending.length}</b>`,
-    ];
-
-    if (pending.length === 0) {
-      lines.push('', '<i>No orders in the delivery queue.</i>');
-      return lines.join('\n');
-    }
-
-    pending.forEach((o, idx) => {
-      const r = (o as unknown as {
-        reseller?: { fullName?: string | null; phoneNumber?: string | null };
-      }).reseller;
-      const name = this.escapeHtml(r?.fullName || 'unknown');
-      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
-      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
-      lines.push('');
-      lines.push(`<b>Order ${idx + 1}</b>`);
-      lines.push(`  ID:      #${o.id}`);
-      lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
-      lines.push(`  Product: ${title}`);
-      const variant = this.formatOrderVariant(o);
-      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
-      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
-      lines.push(`  Name:    ${name}`);
-      lines.push(`  Phone:   ${phone}`);
-      const link = this.formatOrderLink(o);
-      if (link) lines.push(`  Link:    ${link}`);
-    });
-
-    lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
-    return lines.join('\n');
-  }
-
-  private pendingKeyboard(
-    pending: Awaited<ReturnType<OrdersService['findPending']>>,
-  ) {
-    const rows: ReturnType<typeof Markup.button.callback>[][] = pending.map((o) => [
-      Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
-    ]);
-    rows.push([
-      Markup.button.callback('✅ Approval', 'admin:approval'),
-      Markup.button.callback('📊 Report', 'admin:report'),
-    ]);
-    rows.push([Markup.button.callback('⚙️ Settings', 'admin:settings')]);
     rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
     return Markup.inlineKeyboard(rows);
   }
@@ -2903,16 +3030,17 @@ export class BotUpdate {
       order.quantity > 1 && order.unitEtb
         ? `${order.unitEtb.toLocaleString('en-US')} × ${order.quantity} = ${total}`
         : total;
-    const usdTail = this.formatUsdTail(order);
-    return usdTail ? `${main} ${usdTail}` : main;
+    const priceTail = this.formatPriceTail(order);
+    return priceTail ? `${main} ${priceTail}` : main;
   }
 
   /**
-   * Returns "($8.09 USD)" or "($8.09 USD, scraped $32.36)" depending on
-   * whether the user overrode the scraped price. Empty when no USD values
-   * are recorded.
+   * Returns "(35 AED)" when the user entered a Dubai price, or legacy USD tails.
    */
-  private formatUsdTail(order: Order): string {
+  private formatPriceTail(order: Order): string {
+    if (order.userUnitAed != null) {
+      return `(${this.formatAed(order.userUnitAed)} AED)`;
+    }
     const user = order.userUnitUsd;
     const scraped = order.scrapedUnitUsd;
     if (user == null && scraped == null) return '';
@@ -2935,7 +3063,7 @@ export class BotUpdate {
   private formatStatus(status: string): string {
     if (status === 'awaiting_approval') return '✅ Awaiting approval';
     if (status === 'awaiting_payment') return '💳 Awaiting payment';
-    if (status === 'pending') return '📦 Delivery queue';
+    if (status === 'pending') return '📦 In progress';
     if (status === 'cancelled') return '✗ Cancelled';
     if (status === 'completed') return '✓ Completed';
     return status;
@@ -2974,16 +3102,12 @@ export class BotUpdate {
       pricing.deliveryCostEtb,
     );
     const usd = await this.settings.getNumber(SETTING_KEYS.USD_TO_ETB, pricing.usdToEtb ?? 0);
+    const aedToEtb = await this.calculator.resolveAedToEtb();
     const ceiling = await this.settings.getNumber(
       SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
       pricing.ceilingMultiplier,
     );
     const ceilingPct = Math.round((ceiling - 1) * 100);
-    const finalMult = await this.settings.getNumber(
-      SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
-      pricing.finalMultiplier,
-    );
-    const finalPct = Math.round((finalMult - 1) * 100);
     const adminList = await this.admins.findAll();
 
     const lines = [
@@ -2999,8 +3123,8 @@ export class BotUpdate {
       '• Category delivery: shipping fee + commission, used when a category matches',
       `• USD → ETB: <b>${usd > 0 ? usd : 'not set'}</b>`,
       `• USD → AED: <b>${await this.formatUsdToAedSetting()}</b>`,
+      `• AED → ETB: <b>${aedToEtb != null ? aedToEtb.toFixed(2) : 'not set'}</b> <i>(derived from USD rates)</i>`,
       `• Price ceiling: <b>${ceiling.toFixed(2)}×</b> (HIGH factor allowed up to <b>${ceilingPct}%</b> above anchor)`,
-      `• Final price uplift: <b>${finalMult.toFixed(2)}×</b> (${finalPct >= 0 ? '+' : ''}${finalPct}% on every price)`,
       '',
       '<b>Payments</b>',
       `• Down payment bank account: <b>${this.escapeHtml(await this.getPaymentBankAccount() || 'not set')}</b>`,
@@ -3029,10 +3153,7 @@ export class BotUpdate {
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
       ],
       [Markup.button.callback('✏️ USD→AED', 'admin:edit:rate-aed')],
-      [
-        Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling'),
-        Markup.button.callback('✏️ Final uplift ×', 'admin:edit:final-mult'),
-      ],
+      [Markup.button.callback('✏️ Price ceiling ×', 'admin:edit:ceiling')],
       [Markup.button.callback('✏️ Bank account', 'admin:edit:bank-account')],
       [Markup.button.callback('📂 Categories', 'admin:categories')],
       [Markup.button.callback('➕ Add admin', 'admin:add')],
@@ -3790,13 +3911,10 @@ export class BotUpdate {
       case 'qty-input':
         return 'Reply with a quantity (1–100), or tap "← Back" / "✗ Cancel".';
       case 'price':
-        if (draft.scrapedUnitUsd != null) {
-          return (
-            'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09), ' +
-            'or tap "Use scraped" to accept the scraped value.'
-          );
-        }
-        return 'Reply with the unit price in USD you saw on SHEIN (e.g. 8.09).';
+        return (
+          'Set your SHEIN location to UAE, then reply with the unit price in AED ' +
+          '(e.g. 35). Shipping and commission are added automatically.'
+        );
       case 'confirm':
         return 'Review the summary, then confirm or cancel.';
     }
@@ -3823,16 +3941,9 @@ export class BotUpdate {
       ]);
     }
     if (draft.step === 'price') {
-      const scrapedLabel =
-        draft.scrapedUnitUsd != null
-          ? `✓ Use scraped (${this.formatUsd(draft.scrapedUnitUsd)})`
-          : '✓ Use scraped';
-      const rows: ReturnType<typeof Markup.button.callback>[][] = [];
-      if (draft.scrapedUnitUsd != null) {
-        rows.push([Markup.button.callback(scrapedLabel, 'ord:price:keep')]);
-      }
-      rows.push([Markup.button.callback('✗ Cancel', 'ord:cancel')]);
-      return Markup.inlineKeyboard(rows);
+      return Markup.inlineKeyboard([
+        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+      ]);
     }
     return Markup.inlineKeyboard([
       [
@@ -3845,6 +3956,11 @@ export class BotUpdate {
   private formatUsd(value: number | null | undefined): string {
     if (value == null || !Number.isFinite(value)) return '—';
     return '$' + value.toFixed(2);
+  }
+
+  private formatAed(value: number | null | undefined): string {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return value.toFixed(2);
   }
 
   private chunkButtons<T>(items: T[], perRow: number): T[][] {

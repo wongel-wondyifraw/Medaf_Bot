@@ -52,12 +52,6 @@ export interface ThreeFactorDecisionInput {
   quantity: number;
   factors: ThreeFactors;
   ceilingMultiplier: number;
-  /**
-   * Uniform final uplift applied to the chosen per-unit price (after tier
-   * selection, before the floor clamp). Defaults to 1 (no change). Lets admins
-   * calibrate the whole price curve without touching factors/margins.
-   */
-  finalMultiplier?: number;
 }
 
 /** Order pricing input: Dubai factor comes from USD band only (not category). */
@@ -68,7 +62,6 @@ export interface UsdBandDecisionInput {
   deliveryEtb: number;
   etbToAed: number;
   quantity: number;
-  finalMultiplier?: number;
 }
 
 export interface StepPricingSnapshot {
@@ -139,10 +132,7 @@ function computeStep(input: InternalStepInput): StepPricingSnapshot {
 }
 
 /**
- * Finalize a chosen tier:
- *   1) apply the uniform final multiplier (calibration uplift),
- *   2) enforce the hard floor (never below the USD × rate anchor),
- * then re-derive sell/profit/total so the breakdown stays consistent.
+ * Finalize a chosen tier and enforce the hard floor (never below the USD × rate anchor).
  */
 function finalizeDecision(
   snapshot: StepPricingSnapshot,
@@ -151,12 +141,8 @@ function finalizeDecision(
   input: ThreeFactorDecisionInput,
 ): ThreeFactorDecisionResult {
   const floorEtb = Math.max(0, input.baseEtbRef);
-  const mult =
-    input.finalMultiplier && input.finalMultiplier > 0
-      ? input.finalMultiplier
-      : 1;
 
-  let unitEtbPerUnit = Math.ceil(snapshot.unitEtbPerUnit * mult);
+  let unitEtbPerUnit = snapshot.unitEtbPerUnit;
   let floored = false;
   if (unitEtbPerUnit < floorEtb) {
     unitEtbPerUnit = Math.ceil(floorEtb);
@@ -272,7 +258,6 @@ export function runUsdBandDecision(
     quantity: input.quantity,
     factors: { low: factor, avg: factor, high: factor },
     ceilingMultiplier: 1.2,
-    finalMultiplier: input.finalMultiplier,
   });
 }
 
@@ -282,9 +267,8 @@ export function runUsdBandDecision(
  * 2) HIGH — use if totalAed <= baseAed × ceilingMultiplier
  * 3) AVG — fallback
  *
- * The chosen tier is then finalized: a uniform final multiplier (calibration
- * uplift) is applied, and a hard floor clamp guarantees the unit price never
- * drops below the USD × rate anchor, whichever tier wins.
+ * The chosen tier is then finalized with a hard floor clamp so the unit price
+ * never drops below the USD × rate anchor.
  *
  * Law 1: margin on dubai cost only; delivery added after; qty last.
  */
@@ -327,6 +311,51 @@ export interface Law1PricingResult {
   sellingEtbPerUnit: number;
   finalEtbPerUnit: number;
   totalEtb: number;
+}
+
+export interface AedDirectPricingInput {
+  /** Verified Dubai unit price in AED (from SHEIN UAE location). */
+  dubaiAed: number;
+  deliveryEtb: number;
+  /** AED per ETB (= USD_TO_AED / USD_TO_ETB). */
+  etbToAed: number;
+  quantity: number;
+}
+
+export interface AedDirectPricingResult {
+  marginPercent: number;
+  dubaiCostAed: number;
+  dubaiCostEtb: number;
+  sellEtb: number;
+  profitEtb: number;
+  unitEtbPerUnit: number;
+  totalEtb: number;
+}
+
+/**
+ * Direct AED pricing: convert Dubai AED → ETB, apply dynamic margin on product
+ * cost only, then add delivery (shipping + commission).
+ */
+export function runAedDirectPricing(
+  input: AedDirectPricingInput,
+): AedDirectPricingResult {
+  const dubaiCostAed = input.dubaiAed;
+  const dubaiCostEtb = aedToEtb(dubaiCostAed, input.etbToAed);
+  const marginPercent = resolveDynamicMarginPercent(dubaiCostEtb);
+  const sellEtb = dubaiCostEtb * (1 + marginPercent / 100);
+  const profitEtb = sellEtb - dubaiCostEtb;
+  const unitEtbPerUnit = Math.ceil(sellEtb + input.deliveryEtb);
+  const totalEtb = Math.ceil(unitEtbPerUnit * input.quantity);
+
+  return {
+    marginPercent,
+    dubaiCostAed,
+    dubaiCostEtb,
+    sellEtb,
+    profitEtb,
+    unitEtbPerUnit,
+    totalEtb,
+  };
 }
 
 /** Law 1 — profit on Dubai product cost only; delivery added after; qty last. */

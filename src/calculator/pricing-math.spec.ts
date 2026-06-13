@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   resolveDynamicMarginPercent,
   resolveUsdBandDubaiFactor,
+  runAedDirectPricing,
   runThreeFactorDecision,
   runUsdBandDecision,
   USD_BAND_FACTOR_HIGH,
@@ -59,6 +60,39 @@ describe('resolveUsdBandDubaiFactor', () => {
   });
 });
 
+describe('runAedDirectPricing', () => {
+  const usdToEtb = 200;
+  const usdToAed = 3.67;
+  const etbToAed = usdToAed / usdToEtb;
+  const deliveryEtb = 800;
+
+  it('converts AED to ETB, applies margin, then adds delivery', () => {
+    const r = runAedDirectPricing({
+      dubaiAed: 3.67,
+      deliveryEtb,
+      etbToAed,
+      quantity: 1,
+    });
+    assert.ok(Math.abs(r.dubaiCostEtb - 200) < 0.01);
+    assert.equal(r.marginPercent, 30);
+    assert.ok(Math.abs(r.sellEtb - 260) < 0.01);
+    assert.ok(Math.abs(r.profitEtb - 60) < 0.01);
+    assert.equal(r.unitEtbPerUnit, 1060);
+    assert.equal(r.totalEtb, 1060);
+  });
+
+  it('multiplies the per-unit total by quantity last', () => {
+    const r = runAedDirectPricing({
+      dubaiAed: 3.67,
+      deliveryEtb: 500,
+      etbToAed,
+      quantity: 3,
+    });
+    assert.equal(r.unitEtbPerUnit, 760);
+    assert.equal(r.totalEtb, 2280);
+  });
+});
+
 describe('runUsdBandDecision', () => {
   const usdToEtb = 200;
   const usdToAed = 3.67;
@@ -73,22 +107,21 @@ describe('runUsdBandDecision', () => {
       deliveryEtb,
       etbToAed,
       quantity: 1,
-      finalMultiplier: 1.1,
     });
   }
 
-  it('hits ~3,500 ETB at $10 with Dress delivery (rate 200, ×1.1)', () => {
+  it('hits ~3,200 ETB at $10 with Dress delivery (rate 200)', () => {
     const r = bandPrice(10);
     assert.equal(r.reason, 'usd_band');
     assert.equal(r.factorUsed, USD_BAND_FACTOR_MID);
-    assert.ok(r.totalEtb >= 3500 && r.totalEtb <= 3520);
+    assert.ok(r.totalEtb >= 3180 && r.totalEtb <= 3200);
   });
 
   it('applies the same mid factor for $12 (Dress delivery)', () => {
     const r = bandPrice(12);
     assert.equal(r.factorUsed, USD_BAND_FACTOR_MID);
     assert.equal(r.tier, 'avg');
-    assert.ok(r.totalEtb > 3500);
+    assert.ok(r.totalEtb > 3180);
   });
 
   it('picks band-specific factors for $8 vs $12', () => {
@@ -173,31 +206,6 @@ describe('runThreeFactorDecision', () => {
     const result = decide({ low: 0.9, avg: 0.88, high: 1.25 });
     assert.equal(result.floored, false);
     assert.ok(result.unitEtbPerUnit > baseEtbRef);
-  });
-
-  it('applies the final multiplier uplift to the chosen price', () => {
-    const baseline = runThreeFactorDecision({
-      baseAed,
-      baseEtbRef,
-      deliveryEtb,
-      etbToAed,
-      quantity: 1,
-      factors: menShoesFactors,
-      ceilingMultiplier: 1.2,
-    });
-    const uplifted = runThreeFactorDecision({
-      baseAed,
-      baseEtbRef,
-      deliveryEtb,
-      etbToAed,
-      quantity: 1,
-      factors: menShoesFactors,
-      ceilingMultiplier: 1.2,
-      finalMultiplier: 1.1,
-    });
-    assert.equal(baseline.tier, uplifted.tier);
-    assert.equal(uplifted.unitEtbPerUnit, Math.ceil(baseline.unitEtbPerUnit * 1.1));
-    assert.ok(uplifted.profitEtb > baseline.profitEtb);
   });
 
   it('matches worked example shape for $20 Men shoes', () => {

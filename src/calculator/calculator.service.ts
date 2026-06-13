@@ -12,6 +12,7 @@ import {
   FactorReason,
   FactorTier,
   resolveDynamicMarginPercent,
+  runAedDirectPricing,
   runUsdBandDecision,
 } from './pricing-math';
 
@@ -48,6 +49,7 @@ export interface OrderTotal {
 
 export interface CalculateOptions {
   overrideUnitUsd?: number;
+  overrideUnitAed?: number;
   quantity?: number;
   productId?: string | null;
   categoryName?: string | null;
@@ -56,6 +58,13 @@ export interface CalculateOptions {
 export interface PriceFromEthUsdInput {
   ethUsd: number;
   productId: string | null;
+  categoryName: string | null;
+  deliveryEtb: number;
+  quantity: number;
+}
+
+export interface PriceFromAedInput {
+  dubaiAed: number;
   categoryName: string | null;
   deliveryEtb: number;
   quantity: number;
@@ -95,6 +104,65 @@ export class CalculatorService {
     };
   }
 
+  async resolveAedToEtb(): Promise<number | null> {
+    const usdToEtb = await this.resolveUsdToEtb();
+    const usdToAed = await this.resolveUsdToAed();
+    if (!usdToEtb || !usdToAed) return null;
+    return usdToEtb / usdToAed;
+  }
+
+  async priceFromAed(input: PriceFromAedInput): Promise<OrderTotal> {
+    const usdToEtb = await this.resolveUsdToEtb();
+    if (!usdToEtb) {
+      throw new Error(
+        'No ETB exchange rate configured. Set USD_TO_ETB from the admin panel or in .env.',
+      );
+    }
+
+    const usdToAed = await this.resolveUsdToAed();
+    const etbToAed = usdToAed / usdToEtb;
+
+    const decision = runAedDirectPricing({
+      dubaiAed: input.dubaiAed,
+      deliveryEtb: input.deliveryEtb,
+      etbToAed,
+      quantity: input.quantity,
+    });
+
+    const impliedEthUsd = input.dubaiAed / usdToAed;
+
+    this.logger.log(
+      `Priced "${input.categoryName ?? 'unknown'}" ${input.dubaiAed} AED → ` +
+        `${decision.totalEtb} ETB (margin ${decision.marginPercent}%)`,
+    );
+
+    return {
+      totalEtb: decision.totalEtb,
+      sellingEtb: decision.totalEtb,
+      unitEtbPerUnit: decision.unitEtbPerUnit,
+      deliveryEtb: input.deliveryEtb,
+      marginPercent: decision.marginPercent,
+      rateUsed: usdToEtb,
+      usdToAed,
+      fromCurrency: 'AED',
+      matchedCategory: input.categoryName,
+      scrapedUnitUsd: null,
+      effectiveUnitUsd: impliedEthUsd,
+      dubaiUsd: impliedEthUsd,
+      dubaiAed: decision.dubaiCostAed,
+      factorUsed: 1,
+      factorTier: 'low',
+      factorReason: 'viable',
+      baseEtbRef: decision.dubaiCostEtb,
+      baseAed: input.dubaiAed,
+      dubaiCostEtb: decision.dubaiCostEtb,
+      sellEtb: decision.sellEtb,
+      profitEtb: decision.profitEtb,
+      confidence: 'medium',
+      triggers: ['aed_direct'],
+    };
+  }
+
   async priceFromEthUsd(input: PriceFromEthUsdInput): Promise<OrderTotal> {
     const usdToEtb = await this.resolveUsdToEtb();
     if (!usdToEtb) {
@@ -105,7 +173,6 @@ export class CalculatorService {
 
     const usdToAed = await this.resolveUsdToAed();
     const etbToAed = usdToEtb > 0 ? usdToAed / usdToEtb : 0;
-    const finalMultiplier = await this.resolveFinalMultiplier();
 
     const baseEtbRef = input.ethUsd * usdToEtb;
     const baseAed = input.ethUsd * usdToAed;
@@ -117,7 +184,6 @@ export class CalculatorService {
       deliveryEtb: input.deliveryEtb,
       etbToAed,
       quantity: input.quantity,
-      finalMultiplier,
     });
 
     const dubaiUsd = input.ethUsd * decision.factorUsed;
@@ -244,15 +310,6 @@ export class CalculatorService {
     return db > 0 ? db : pricing.ceilingMultiplier;
   }
 
-  async resolveFinalMultiplier(): Promise<number> {
-    const pricing = this.config.get('pricing', { infer: true });
-    const db = await this.settings.getNumber(
-      SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
-      0,
-    );
-    return db > 0 ? db : pricing.finalMultiplier;
-  }
-
   /**
    * Legacy entry point used at draft creation (delivery snapshot) and when
    * scraping provides a USD price. When `overrideUnitUsd` is set, runs the
@@ -272,6 +329,15 @@ export class CalculatorService {
 
     const scrapedUnitUsd = extractScrapedUsd(product);
     const categoryName = opts.categoryName ?? matchedCategory;
+
+    if (typeof opts.overrideUnitAed === 'number' && opts.overrideUnitAed > 0) {
+      return this.priceFromAed({
+        dubaiAed: opts.overrideUnitAed,
+        categoryName,
+        deliveryEtb,
+        quantity: opts.quantity ?? 1,
+      });
+    }
 
     if (typeof opts.overrideUnitUsd === 'number' && opts.overrideUnitUsd > 0) {
       return this.priceFromEthUsd({

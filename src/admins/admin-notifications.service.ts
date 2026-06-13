@@ -139,9 +139,13 @@ export class AdminNotificationsService {
   }
 
   private formatUsdTail(order: {
+    userUnitAed?: number | null;
     userUnitUsd: number | null;
     scrapedUnitUsd: number | null;
   }): string {
+    if (order.userUnitAed != null) {
+      return `(${order.userUnitAed.toFixed(2)} AED)`;
+    }
     const user = order.userUnitUsd;
     const scraped = order.scrapedUnitUsd;
     if (user == null && scraped == null) return '';

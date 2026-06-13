@@ -27,8 +27,10 @@ export interface OrderDraft {
   quantity: number;
   /** USD as derived from the scrape. Null when the scraper had no USD figure. */
   scrapedUnitUsd: number | null;
-  /** USD as entered by the user. Null until the user has chosen on the price step. */
+  /** USD as entered by the user (legacy). Null for AED-priced orders. */
   userUnitUsd: number | null;
+  /** AED as entered by the user from SHEIN UAE location. */
+  userUnitAed: number | null;
   /** Per-unit ETB selling price (excludes delivery). */
   unitEtb: number;
   /** Selling ETB (unit × qty), excludes delivery. */
@@ -90,7 +92,8 @@ export interface CreateDraftInput {
 }
 
 export interface UpdatePriceInput {
-  userUnitUsd: number;
+  userUnitAed: number;
+  userUnitUsd: number | null;
   unitEtb: number;
   sellingEtb: number;
   totalEtb: number;
@@ -139,6 +142,7 @@ export class OrderDraftStateService {
       quantity: 1,
       scrapedUnitUsd: input.scrapedUnitUsd,
       userUnitUsd: null,
+      userUnitAed: null,
       unitEtb: input.unitEtb,
       sellingEtb: input.sellingEtb,
       totalEtb: input.totalEtb,
@@ -235,6 +239,7 @@ export class OrderDraftStateService {
     const draft = this.getDraft(userId);
     if (!draft) return null;
     draft.userUnitUsd = input.userUnitUsd;
+    draft.userUnitAed = input.userUnitAed;
     draft.unitEtb = input.unitEtb;
     draft.sellingEtb = input.sellingEtb;
     draft.totalEtb = input.totalEtb;

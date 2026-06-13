@@ -82,6 +82,16 @@ export class Order {
   })
   userUnitUsd!: number | null;
 
+  @Column({
+    type: 'numeric',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+    name: 'user_unit_aed',
+    transformer: numericTransformer,
+  })
+  userUnitAed!: number | null;
+
   @Column({ type: 'int', name: 'selling_etb' })
   sellingEtb!: number;
 

@@ -14,6 +14,7 @@ export interface CreateOrderInput {
   unitEtb: number | null;
   scrapedUnitUsd: number | null;
   userUnitUsd: number | null;
+  userUnitAed: number | null;
   sellingEtb: number;
 }
 
@@ -135,11 +136,16 @@ export class OrdersService {
   }
 
   findPending(): Promise<Order[]> {
+    return this.findByStatus('pending');
+  }
+
+  findByStatus(status: OrderStatus, limit = 25): Promise<Order[]> {
     return this.repo
       .createQueryBuilder('o')
       .leftJoinAndSelect('o.reseller', 'reseller')
-      .where("o.status = 'pending'")
-      .orderBy('o.created_at', 'ASC')
+      .where('o.status = :status', { status })
+      .orderBy('o.created_at', 'DESC')
+      .limit(limit)
       .getMany();
   }
 
