@@ -3080,8 +3080,28 @@ export class BotUpdate {
 
   private formatOrderLink(order: Order): string | null {
     if (!order.link) return null;
-    const safeUrl = this.escapeHtml(order.link);
-    return `<a href="${safeUrl}">View product</a>`;
+    return this.formatProductLinkHtml(order.link);
+  }
+
+  private formatProductLinkHtml(link: string): string {
+    return `<a href="${this.escapeHtml(link)}">View product</a>`;
+  }
+
+  /** Plain-text Telegram callbacks drop HTML links; restore a clickable product line. */
+  private injectProductLinkHtml(text: string, link: string): string {
+    const lines = text.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== 'View product' && !/^Link:\s*View product\s*$/.test(trimmed);
+    });
+    lines.push(this.formatProductLinkHtml(link));
+    return lines.join('\n').replace(/\n+$/, '');
+  }
+
+  private productLinkInlineKeyboard(link: string | null | undefined) {
+    if (!link) return undefined;
+    return Markup.inlineKeyboard([
+      [Markup.button.url('🔗 View product', link)],
+    ]);
   }
 
   private formatStatus(status: string): string {
@@ -3116,7 +3136,8 @@ export class BotUpdate {
     return text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   private async buildSettingsMessage(): Promise<string> {
@@ -4044,10 +4065,20 @@ export class BotUpdate {
     if (!currentText.includes(`#${orderId}`) || !currentText.includes('awaiting approval')) {
       return false;
     }
-    const cleaned = this.stripStatusLines(currentText);
+    const order = await this.orders.findById(orderId);
+    let cleaned = this.stripStatusLines(currentText);
+    if (order?.link) {
+      cleaned = this.injectProductLinkHtml(cleaned, order.link);
+    }
+    const linkKeyboard = this.productLinkInlineKeyboard(order?.link);
     try {
-      await ctx.editMessageText(`${cleaned}\n\n${statusLine}`, { parse_mode: 'HTML' });
-      await ctx.editMessageReplyMarkup(undefined);
+      await ctx.editMessageText(`${cleaned}\n\n${statusLine}`, {
+        parse_mode: 'HTML',
+        ...(linkKeyboard ?? {}),
+      });
+      if (!linkKeyboard) {
+        await ctx.editMessageReplyMarkup(undefined);
+      }
       return true;
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return true;
