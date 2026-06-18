@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Action, Command, Ctx, InjectBot, On, Start, Update } from 'nestjs-telegraf';
 import { Context, Markup, Telegraf } from 'telegraf';
+import type { InlineKeyboardButton } from '@telegraf/types';
 import { AdminsService } from '../admins/admins.service';
 import { AdminNotificationsService } from '../admins/admin-notifications.service';
 import { orderApprovalInlineKeyboard } from '../admins/order-approval-inline';
@@ -1263,6 +1264,55 @@ export class BotUpdate {
     }
   }
 
+  @Action(/^admin:cancel:(\d+)$/)
+  async onAdminCancelOrder(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+      if (order.status === 'cancelled') {
+        await this.safeAnswer(ctx, `Order #${orderId} is already cancelled.`, false);
+        return;
+      }
+      if (order.status !== 'awaiting_payment') {
+        await this.safeAnswer(
+          ctx,
+          'Only orders awaiting payment can be cancelled here.',
+          true,
+        );
+        return;
+      }
+
+      const updated = await this.orders.cancel(orderId);
+      if (!updated) {
+        await this.safeAnswer(ctx, 'Could not cancel order.', true);
+        return;
+      }
+
+      const from = ctx.from;
+      this.logger.log(`Order #${orderId} cancelled by admin telegramId=${from?.id}`);
+      await this.sendAdminCancellationToReseller(updated);
+      await this.safeAnswer(ctx, `✗ Order #${orderId} cancelled.`, false);
+
+      const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+      const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
+      await this.showAdminOrdersByStatus(ctx, 'awaiting_payment', 'edit', page);
+    } catch (err) {
+      this.fileLogger.logError('adminCancelOrder', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not cancel order. Please try again.', true);
+    }
+  }
+
   @Action('admin:categories')
   async onAdminCategories(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -2444,6 +2494,25 @@ export class BotUpdate {
     }
   }
 
+  private async sendAdminCancellationToReseller(order: Order): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    try {
+      await this.bot.telegram.sendMessage(
+        fullOrder.reseller.telegramId,
+        [
+          `<b>Order #${order.id} was cancelled by Medaf collation</b>`,
+          '',
+          'If you have questions, please contact Medaf collation.',
+        ].join('\n'),
+        { parse_mode: 'HTML' },
+      );
+    } catch (err) {
+      this.fileLogger.logError('sendAdminCancellation', err, { orderId: order.id });
+    }
+  }
+
   private async sendPaymentRequestToReseller(
     order: Order,
     bankAccount: string,
@@ -2775,6 +2844,8 @@ export class BotUpdate {
       lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
     } else if (status === 'pending') {
       lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
+    } else if (status === 'awaiting_payment') {
+      lines.push('', '<i>Open the product link or cancel an order using the buttons below.</i>');
     }
 
     return lines.join('\n');
@@ -2786,7 +2857,7 @@ export class BotUpdate {
     page: number,
     totalPages: number,
   ) {
-    const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+    const rows: InlineKeyboardButton[][] = [];
 
     if (status === 'awaiting_approval') {
       for (const o of orders) {
@@ -2801,6 +2872,13 @@ export class BotUpdate {
         rows.push([
           Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
         ]);
+      }
+    } else if (status === 'awaiting_payment') {
+      for (const o of orders) {
+        if (o.link) {
+          rows.push([Markup.button.url(`🔗 View product #${o.id}`, o.link)]);
+        }
+        rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
       }
     }
 
@@ -2817,18 +2895,18 @@ export class BotUpdate {
   }
 
   private adminOrdersPageSizeFor(status: Order['status']): number {
-    if (status === 'pending' || status === 'awaiting_approval') {
+    if (
+      status === 'pending' ||
+      status === 'awaiting_approval' ||
+      status === 'awaiting_payment'
+    ) {
       return this.adminOrdersInteractivePageSize;
     }
     return this.adminOrdersReadOnlyPageSize;
   }
 
   private adminOrdersUseCompactFormat(status: Order['status']): boolean {
-    return (
-      status === 'completed' ||
-      status === 'cancelled' ||
-      status === 'awaiting_payment'
-    );
+    return status === 'completed' || status === 'cancelled';
   }
 
   private adminOrdersPageCallback(status: Order['status'], page: number): string {
