@@ -1284,15 +1284,20 @@ export class BotUpdate {
         await this.safeAnswer(ctx, `Order #${orderId} is already cancelled.`, false);
         return;
       }
-      if (order.status !== 'awaiting_payment') {
-        await this.safeAnswer(
-          ctx,
-          'Only orders awaiting payment can be cancelled here.',
-          true,
-        );
+      if (order.status === 'completed') {
+        await this.safeAnswer(ctx, 'Completed orders cannot be cancelled.', true);
+        return;
+      }
+      if (
+        order.status !== 'awaiting_approval' &&
+        order.status !== 'awaiting_payment' &&
+        order.status !== 'pending'
+      ) {
+        await this.safeAnswer(ctx, 'This order cannot be cancelled.', true);
         return;
       }
 
+      const previousStatus = order.status;
       const updated = await this.orders.cancel(orderId);
       if (!updated) {
         await this.safeAnswer(ctx, 'Could not cancel order.', true);
@@ -1301,12 +1306,16 @@ export class BotUpdate {
 
       const from = ctx.from;
       this.logger.log(`Order #${orderId} cancelled by admin telegramId=${from?.id}`);
-      await this.sendAdminCancellationToReseller(updated);
+      await this.sendMedafStoreCancellationToReseller(updated);
       await this.safeAnswer(ctx, `✗ Order #${orderId} cancelled.`, false);
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      await this.showAdminOrdersByStatus(ctx, 'awaiting_payment', 'edit', page);
+      if (this.isApprovalQueueMessage(cbMessage?.text)) {
+        await this.showApprovalQueue(ctx, 'edit', page);
+      } else {
+        await this.showAdminOrdersByStatus(ctx, previousStatus, 'edit', page);
+      }
     } catch (err) {
       this.fileLogger.logError('adminCancelOrder', err, { orderId });
       await this.safeAnswer(ctx, 'Could not cancel order. Please try again.', true);
@@ -2411,7 +2420,7 @@ export class BotUpdate {
     }
 
     this.logger.log(`Order #${orderId} rejected by admin ${userId}`);
-    await this.sendRejectionToReseller(updated);
+    await this.sendMedafStoreCancellationToReseller(updated, updated.rejectionReason ?? undefined);
     await ctx.reply(`✗ Order #${orderId} rejected. User notified.`);
   }
 
@@ -2474,42 +2483,48 @@ export class BotUpdate {
     }
   }
 
-  private async sendRejectionToReseller(order: Order): Promise<void> {
+  private buildMedafStoreCancellationMessage(
+    order: Order,
+    resellerName: string,
+    cancellationMessage?: string,
+  ): string {
+    const name = this.escapeHtml(resellerName.trim() || 'there');
+    const title = this.escapeHtml((order.productTitle || 'your order').slice(0, 80));
+    const lines = [
+      `Hi <b>${name}</b>,`,
+      '',
+      `<b>Medaf store</b> has cancelled your order <b>#${order.id}</b>:`,
+      `<i>${title}</i>`,
+    ];
+    const detail = cancellationMessage?.trim();
+    if (detail) {
+      lines.push('', this.escapeHtml(detail));
+    } else {
+      lines.push('', 'We\u2019re sorry \u2014 this order will not be processed.');
+    }
+    lines.push('', 'If you have questions, please contact <b>Medaf store</b>.');
+    return lines.join('\n');
+  }
+
+  private async sendMedafStoreCancellationToReseller(
+    order: Order,
+    cancellationMessage?: string,
+  ): Promise<void> {
     const fullOrder = await this.orders.findByIdWithReseller(order.id);
     if (!fullOrder?.reseller?.telegramId) return;
 
-    const reason = this.escapeHtml(order.rejectionReason || 'No reason provided.');
-    const lines = [
-      `<b>Order #${order.id} was not approved by Medaf collation</b>`,
-      '',
-      reason,
-    ];
+    const message = this.buildMedafStoreCancellationMessage(
+      fullOrder,
+      fullOrder.reseller.fullName || 'Customer',
+      cancellationMessage,
+    );
 
     try {
-      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, lines.join('\n'), {
+      await this.bot.telegram.sendMessage(fullOrder.reseller.telegramId, message, {
         parse_mode: 'HTML',
       });
     } catch (err) {
-      this.fileLogger.logError('sendRejection', err, { orderId: order.id });
-    }
-  }
-
-  private async sendAdminCancellationToReseller(order: Order): Promise<void> {
-    const fullOrder = await this.orders.findByIdWithReseller(order.id);
-    if (!fullOrder?.reseller?.telegramId) return;
-
-    try {
-      await this.bot.telegram.sendMessage(
-        fullOrder.reseller.telegramId,
-        [
-          `<b>Order #${order.id} was cancelled by Medaf collation</b>`,
-          '',
-          'If you have questions, please contact Medaf collation.',
-        ].join('\n'),
-        { parse_mode: 'HTML' },
-      );
-    } catch (err) {
-      this.fileLogger.logError('sendAdminCancellation', err, { orderId: order.id });
+      this.fileLogger.logError('sendMedafStoreCancellation', err, { orderId: order.id });
     }
   }
 
@@ -2841,9 +2856,9 @@ export class BotUpdate {
     });
 
     if (status === 'awaiting_approval') {
-      lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
+      lines.push('', '<i>Use the buttons below to approve, adjust price, reject, or cancel.</i>');
     } else if (status === 'pending') {
-      lines.push('', '<i>Tap a button below to mark an order as delivered.</i>');
+      lines.push('', '<i>Confirm delivery or cancel an order using the buttons below.</i>');
     } else if (status === 'awaiting_payment') {
       lines.push('', '<i>Open the product link or cancel an order using the buttons below.</i>');
     }
@@ -2866,11 +2881,13 @@ export class BotUpdate {
           Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
           Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
         ]);
+        rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
       }
     } else if (status === 'pending') {
       for (const o of orders) {
         rows.push([
           Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
+          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
         ]);
       }
     } else if (status === 'awaiting_payment') {
@@ -2923,6 +2940,10 @@ export class BotUpdate {
       text?.match(/Page\s+(\d+)\s+of\s+(\d+)/i);
     if (!match) return 0;
     return Math.max(0, parseInt(match[1], 10) - 1);
+  }
+
+  private isApprovalQueueMessage(text: string | undefined): boolean {
+    return !!text?.includes('✅ Awaiting approval') || !!text?.includes('Awaiting approval</b>');
   }
 
   private buildPaginationButtons(
@@ -3222,18 +3243,19 @@ export class BotUpdate {
       this.appendAdminOrderDetailLines(lines, o, baseIndex + idx, false);
     });
 
-    lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
+    lines.push('', '<i>Use the buttons below to approve, adjust price, reject, or cancel.</i>');
     return lines.join('\n');
   }
 
   private approvalKeyboard(awaiting: Order[], page: number, totalPages: number) {
-    const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+    const rows: InlineKeyboardButton[][] = [];
     for (const o of awaiting) {
       rows.push([
         Markup.button.callback(`✓ Approve #${o.id}`, `admin:approve:${o.id}`),
         Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
         Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
       ]);
+      rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
     }
     const nav = this.buildPaginationButtons(
       (p) => this.adminApprovalPageCallback(p),
