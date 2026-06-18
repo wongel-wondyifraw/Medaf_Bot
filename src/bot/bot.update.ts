@@ -47,6 +47,10 @@ export class BotUpdate {
   private readonly updateButtonLabel = '🔄 Update';
   private readonly adminApprovalsButtonLabel = '✅ Approvals';
   private readonly adminOrdersButtonLabel = '📋 Orders';
+  /** Orders with action buttons — keep small to stay under Telegram's 4096-char limit. */
+  private readonly adminOrdersInteractivePageSize = 5;
+  /** Read-only order lists use compact one-line rows. */
+  private readonly adminOrdersReadOnlyPageSize = 10;
 
   private readonly adminOrderStatusCategories: Array<{
     status: Order['status'];
@@ -1067,7 +1071,8 @@ export class BotUpdate {
   @Action('admin:pending')
   async onAdminPending(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
-    await this.showAdminOrdersByStatus(ctx, 'pending', 'edit');
+    await this.safeAnswer(ctx, 'Loading...', false);
+    await this.showAdminOrdersByStatus(ctx, 'pending', 'edit', 0);
   }
 
   @Action('admin:orders')
@@ -1077,33 +1082,27 @@ export class BotUpdate {
     await this.showAdminOrdersHub(ctx, 'edit');
   }
 
-  @Action(/^admin:orders:([a-z_]+)$/)
+  @Action(/^admin:orders:([a-z_]+)(?::(\d+))?$/)
   async onAdminOrdersByStatus(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const status = (match?.[1] || '') as Order['status'];
+    const page = parseInt(match?.[2] || '0', 10) || 0;
     if (!this.isAdminOrderStatus(status)) {
       await this.safeAnswer(ctx, 'Invalid order category.', true);
       return;
     }
     await this.safeAnswer(ctx, 'Loading...', false);
-    await this.showAdminOrdersByStatus(ctx, status, 'edit');
+    await this.showAdminOrdersByStatus(ctx, status, 'edit', page);
   }
 
-  @Action('admin:approval')
+  @Action(/^admin:approval(?::(\d+))?$/)
   async onAdminApproval(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const page = parseInt(match?.[1] || '0', 10) || 0;
     await this.safeAnswer(ctx, 'Loading approval queue...', false);
-    try {
-      const awaiting = await this.orders.findAwaitingApproval();
-      await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
-        parse_mode: 'HTML',
-        ...this.approvalKeyboard(awaiting),
-      });
-    } catch (err) {
-      if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminApproval', err);
-    }
+    await this.showApprovalQueue(ctx, 'edit', page);
   }
 
   @Action(/^admin:approve:(\d+)$/)
@@ -1158,16 +1157,7 @@ export class BotUpdate {
         '✅ <b>Approved</b> — payment request sent to reseller.',
       );
       if (!feedUpdated) {
-        const awaiting = await this.orders.findAwaitingApproval();
-        try {
-          await ctx.editMessageText(this.buildApprovalMessage(awaiting), {
-            parse_mode: 'HTML',
-            ...this.approvalKeyboard(awaiting),
-          });
-        } catch (err) {
-          if (this.isMessageNotModifiedError(err)) return;
-          throw err;
-        }
+        await this.showApprovalQueue(ctx, 'edit', 0);
       }
     } catch (err) {
       this.fileLogger.logError('adminApprove', err, { orderId });
@@ -1264,19 +1254,9 @@ export class BotUpdate {
         await this.safeAnswer(ctx, `✓ Order #${orderId} marked done.`, false);
       }
 
-      const pending = await this.orders.findByStatus('pending');
-      try {
-        await ctx.editMessageText(
-          this.buildAdminOrdersByStatusMessage(pending, 'pending'),
-          {
-            parse_mode: 'HTML',
-            ...this.adminOrdersByStatusKeyboard(pending, 'pending'),
-          },
-        );
-      } catch (err) {
-        if (this.isMessageNotModifiedError(err)) return;
-        throw err;
-      }
+      const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+      const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
+      await this.showAdminOrdersByStatus(ctx, 'pending', 'edit', page);
     } catch (err) {
       this.fileLogger.logError('adminMarkDone', err, { orderId });
       await this.safeAnswer(ctx, 'Could not mark order done. Please try again.', true);
@@ -2588,11 +2568,7 @@ export class BotUpdate {
   }
 
   private async replyAdminApprovals(ctx: Context): Promise<void> {
-    const awaiting = await this.orders.findAwaitingApproval();
-    await ctx.reply(this.buildApprovalMessage(awaiting), {
-      parse_mode: 'HTML',
-      ...this.approvalKeyboard(awaiting),
-    });
+    await this.showApprovalQueue(ctx, 'reply', 0);
   }
 
   private async replyAdminOrdersHub(ctx: Context): Promise<void> {
@@ -2628,24 +2604,80 @@ export class BotUpdate {
     ctx: Context,
     status: Order['status'],
     mode: 'reply' | 'edit',
+    page = 0,
   ): Promise<void> {
-    const orders = await this.orders.findByStatus(status);
+    const pageSize = this.adminOrdersPageSizeFor(status);
+    const totalCount = await this.orders.countByStatus(status);
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const orders = await this.orders.findByStatus(status, {
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const body = this.buildAdminOrdersByStatusMessage(
+      orders,
+      status,
+      safePage,
+      totalCount,
+    );
     const payload = {
       parse_mode: 'HTML' as const,
-      ...this.adminOrdersByStatusKeyboard(orders, status),
+      ...this.adminOrdersByStatusKeyboard(orders, status, safePage, totalPages),
     };
     try {
       if (mode === 'edit') {
-        await ctx.editMessageText(
-          this.buildAdminOrdersByStatusMessage(orders, status),
-          payload,
-        );
+        await ctx.editMessageText(body, payload);
       } else {
-        await ctx.reply(this.buildAdminOrdersByStatusMessage(orders, status), payload);
+        await ctx.reply(body, payload);
       }
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
-      this.fileLogger.logError('adminOrdersByStatus', err, { status });
+      this.fileLogger.logError('adminOrdersByStatus', err, {
+        status,
+        page: safePage,
+        totalCount,
+      });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load this order list. Try again or use Prev/Next if available.',
+      );
+    }
+  }
+
+  private async showApprovalQueue(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+    page = 0,
+  ): Promise<void> {
+    const pageSize = this.adminOrdersInteractivePageSize;
+    const totalCount = await this.orders.countByStatus('awaiting_approval');
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const awaiting = await this.orders.findAwaitingApproval({
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const body = this.buildApprovalMessage(awaiting, safePage, totalCount);
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.approvalKeyboard(awaiting, safePage, totalPages),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, payload);
+      } else {
+        await ctx.reply(body, payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminApproval', err, {
+        page: safePage,
+        totalCount,
+      });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load the approval queue. Try again or use Prev/Next.',
+      );
     }
   }
 
@@ -2710,12 +2742,16 @@ export class BotUpdate {
   private buildAdminOrdersByStatusMessage(
     orders: Order[],
     status: Order['status'],
+    page: number,
+    totalCount: number,
   ): string {
+    const pageSize = this.adminOrdersPageSizeFor(status);
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const title = this.adminOrderStatusTitle(status);
     const lines = [
       `<b>${title}</b>`,
       '',
-      `Showing <b>${orders.length}</b> order(s) (most recent first).`,
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
     ];
 
     if (orders.length === 0) {
@@ -2723,27 +2759,16 @@ export class BotUpdate {
       return lines.join('\n');
     }
 
+    const compact = this.adminOrdersUseCompactFormat(status);
+    const baseIndex = page * pageSize;
     orders.forEach((o, idx) => {
-      const r = (o as unknown as {
-        reseller?: { fullName?: string | null; phoneNumber?: string | null };
-      }).reseller;
-      const name = this.escapeHtml(r?.fullName || 'unknown');
-      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
-      const orderStatus = this.formatStatus(o.status);
-      const titleText = this.escapeHtml((o.productTitle || '').slice(0, 60));
-      lines.push('');
-      lines.push(`<b>Order ${idx + 1}</b>`);
-      lines.push(`  ID:      #${o.id}`);
-      lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
-      lines.push(`  Product: ${titleText}`);
-      const variant = this.formatOrderVariant(o);
-      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
-      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
-      lines.push(`  Name:    ${name}`);
-      lines.push(`  Phone:   ${phone}`);
-      lines.push(`  Status:  ${orderStatus}`);
-      const link = this.formatOrderLink(o);
-      if (link) lines.push(`  Link:    ${link}`);
+      if (compact) {
+        lines.push('');
+        this.appendAdminOrderCompactLine(lines, o, baseIndex + idx);
+      } else {
+        lines.push('');
+        this.appendAdminOrderDetailLines(lines, o, baseIndex + idx, true);
+      }
     });
 
     if (status === 'awaiting_approval') {
@@ -2755,7 +2780,12 @@ export class BotUpdate {
     return lines.join('\n');
   }
 
-  private adminOrdersByStatusKeyboard(orders: Order[], status: Order['status']) {
+  private adminOrdersByStatusKeyboard(
+    orders: Order[],
+    status: Order['status'],
+    page: number,
+    totalPages: number,
+  ) {
     const rows: ReturnType<typeof Markup.button.callback>[][] = [];
 
     if (status === 'awaiting_approval') {
@@ -2774,9 +2804,117 @@ export class BotUpdate {
       }
     }
 
+    const nav = this.buildPaginationButtons(
+      (p) => this.adminOrdersPageCallback(status, p),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+
     rows.push([Markup.button.callback('← All categories', 'admin:orders')]);
     rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
     return Markup.inlineKeyboard(rows);
+  }
+
+  private adminOrdersPageSizeFor(status: Order['status']): number {
+    if (status === 'pending' || status === 'awaiting_approval') {
+      return this.adminOrdersInteractivePageSize;
+    }
+    return this.adminOrdersReadOnlyPageSize;
+  }
+
+  private adminOrdersUseCompactFormat(status: Order['status']): boolean {
+    return (
+      status === 'completed' ||
+      status === 'cancelled' ||
+      status === 'awaiting_payment'
+    );
+  }
+
+  private adminOrdersPageCallback(status: Order['status'], page: number): string {
+    return page <= 0 ? `admin:orders:${status}` : `admin:orders:${status}:${page}`;
+  }
+
+  private adminApprovalPageCallback(page: number): string {
+    return page <= 0 ? 'admin:approval' : `admin:approval:${page}`;
+  }
+
+  private parseAdminOrdersPageFromText(text: string | undefined): number {
+    const match =
+      text?.match(/Page\s+<b>(\d+)<\/b>\s+of\s+<b>\d+<\/b>/i) ??
+      text?.match(/Page\s+(\d+)\s+of\s+(\d+)/i);
+    if (!match) return 0;
+    return Math.max(0, parseInt(match[1], 10) - 1);
+  }
+
+  private buildPaginationButtons(
+    callbackForPage: (page: number) => string,
+    page: number,
+    totalPages: number,
+  ): ReturnType<typeof Markup.button.callback>[] {
+    if (totalPages <= 1) return [];
+    const row: ReturnType<typeof Markup.button.callback>[] = [];
+    if (page > 0) {
+      row.push(Markup.button.callback('◀ Prev', callbackForPage(page - 1)));
+    }
+    if (page < totalPages - 1) {
+      row.push(Markup.button.callback('Next ▶', callbackForPage(page + 1)));
+    }
+    return row;
+  }
+
+  private appendAdminOrderCompactLine(
+    lines: string[],
+    order: Order,
+    listIndex: number,
+  ): void {
+    const r = (order as unknown as {
+      reseller?: { fullName?: string | null; phoneNumber?: string | null };
+    }).reseller;
+    const title = this.escapeHtml((order.productTitle || 'Product').slice(0, 45));
+    const price = `${order.sellingEtb.toLocaleString('en-US')} ETB`;
+    const name = this.escapeHtml((r?.fullName || 'unknown').slice(0, 24));
+    const variant = this.formatOrderVariant(order);
+    const variantBit = variant ? ` · ${this.escapeHtml(variant)}` : '';
+    lines.push(
+      `<b>${listIndex + 1}.</b> #${order.id} · ${title}${variantBit} · ${price} · ${name}`,
+    );
+  }
+
+  private appendAdminOrderDetailLines(
+    lines: string[],
+    order: Order,
+    listIndex: number,
+    includeStatus: boolean,
+  ): void {
+    const r = (order as unknown as {
+      reseller?: { fullName?: string | null; phoneNumber?: string | null };
+    }).reseller;
+    const name = this.escapeHtml(r?.fullName || 'unknown');
+    const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
+    const titleText = this.escapeHtml((order.productTitle || '').slice(0, 60));
+    lines.push(`<b>Order ${listIndex + 1}</b>`);
+    lines.push(`  ID:      #${order.id}`);
+    lines.push(`  Placed:  ${this.escapeHtml(formatGmtPlus3(order.createdAt))}`);
+    lines.push(`  Product: ${titleText}`);
+    const variant = this.formatOrderVariant(order);
+    if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
+    lines.push(`  Price:   ${this.formatOrderPrice(order)}`);
+    lines.push(`  Name:    ${name}`);
+    lines.push(`  Phone:   ${phone}`);
+    if (includeStatus) {
+      lines.push(`  Status:  ${this.formatStatus(order.status)}`);
+    }
+    const link = this.formatOrderLink(order);
+    if (link) lines.push(`  Link:    ${link}`);
+  }
+
+  private async notifyAdminViewFailed(ctx: Context, message: string): Promise<void> {
+    try {
+      await ctx.reply(message, { parse_mode: 'HTML' });
+    } catch (err) {
+      this.fileLogger.logError('notifyAdminViewFailed', err);
+    }
   }
 
   private async handleUserStart(ctx: Context, refreshed: boolean): Promise<void> {
@@ -2983,12 +3121,16 @@ export class BotUpdate {
   }
 
   private buildApprovalMessage(
-    awaiting: Awaited<ReturnType<OrdersService['findAwaitingApproval']>>,
+    awaiting: Order[],
+    page: number,
+    totalCount: number,
   ): string {
+    const pageSize = this.adminOrdersInteractivePageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const lines = [
       '<b>✅ Awaiting approval</b>',
       '',
-      `Total: <b>${awaiting.length}</b>`,
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
     ];
 
     if (awaiting.length === 0) {
@@ -2996,34 +3138,17 @@ export class BotUpdate {
       return lines.join('\n');
     }
 
+    const baseIndex = page * pageSize;
     awaiting.forEach((o, idx) => {
-      const r = (o as unknown as {
-        reseller?: { fullName?: string | null; phoneNumber?: string | null };
-      }).reseller;
-      const name = this.escapeHtml(r?.fullName || 'unknown');
-      const phone = this.escapeHtml(this.formatPhone(r?.phoneNumber));
-      const title = this.escapeHtml((o.productTitle || '').slice(0, 60));
       lines.push('');
-      lines.push(`<b>Order ${idx + 1}</b>`);
-      lines.push(`  ID:      #${o.id}`);
-      lines.push(`  Submitted: ${this.escapeHtml(formatGmtPlus3(o.createdAt))}`);
-      lines.push(`  Product: ${title}`);
-      const variant = this.formatOrderVariant(o);
-      if (variant) lines.push(`  Variant: ${this.escapeHtml(variant)}`);
-      lines.push(`  Price:   ${this.formatOrderPrice(o)}`);
-      lines.push(`  Name:    ${name}`);
-      lines.push(`  Phone:   ${phone}`);
-      const link = this.formatOrderLink(o);
-      if (link) lines.push(`  Link:    ${link}`);
+      this.appendAdminOrderDetailLines(lines, o, baseIndex + idx, false);
     });
 
     lines.push('', '<i>Use the buttons below to approve, adjust price, or reject.</i>');
     return lines.join('\n');
   }
 
-  private approvalKeyboard(
-    awaiting: Awaited<ReturnType<OrdersService['findAwaitingApproval']>>,
-  ) {
+  private approvalKeyboard(awaiting: Order[], page: number, totalPages: number) {
     const rows: ReturnType<typeof Markup.button.callback>[][] = [];
     for (const o of awaiting) {
       rows.push([
@@ -3032,6 +3157,12 @@ export class BotUpdate {
         Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
       ]);
     }
+    const nav = this.buildPaginationButtons(
+      (p) => this.adminApprovalPageCallback(p),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
     rows.push([
       Markup.button.callback('📋 Orders', 'admin:orders'),
       Markup.button.callback('📊 Report', 'admin:report'),

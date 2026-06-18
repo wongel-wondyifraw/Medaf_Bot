@@ -143,12 +143,20 @@ export class OrdersService {
     });
   }
 
-  findAwaitingApproval(): Promise<Order[]> {
+  countByStatus(status: OrderStatus): Promise<number> {
+    return this.repo.count({ where: { status } });
+  }
+
+  findAwaitingApproval(opts?: { limit?: number; offset?: number }): Promise<Order[]> {
+    const limit = opts?.limit ?? 50;
+    const offset = opts?.offset ?? 0;
     return this.repo
       .createQueryBuilder('o')
       .leftJoinAndSelect('o.reseller', 'reseller')
       .where("o.status = 'awaiting_approval'")
       .orderBy('o.created_at', 'ASC')
+      .limit(limit)
+      .offset(offset)
       .getMany();
   }
 
@@ -156,13 +164,19 @@ export class OrdersService {
     return this.findByStatus('pending');
   }
 
-  findByStatus(status: OrderStatus, limit = 25): Promise<Order[]> {
+  findByStatus(
+    status: OrderStatus,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<Order[]> {
+    const limit = opts?.limit ?? 25;
+    const offset = opts?.offset ?? 0;
     return this.repo
       .createQueryBuilder('o')
       .leftJoinAndSelect('o.reseller', 'reseller')
       .where('o.status = :status', { status })
       .orderBy('o.created_at', 'DESC')
       .limit(limit)
+      .offset(offset)
       .getMany();
   }
 
