@@ -13,6 +13,7 @@ export type OrderStatus =
   | 'awaiting_approval'
   | 'awaiting_payment'
   | 'pending'
+  | 'shipping'
   | 'cancelled'
   | 'completed';
 

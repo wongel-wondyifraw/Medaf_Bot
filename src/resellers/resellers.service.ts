@@ -14,6 +14,10 @@ export class ResellersService {
     return this.repo.findOne({ where: { telegramId: String(telegramId) } });
   }
 
+  findById(id: number): Promise<Reseller | null> {
+    return this.repo.findOne({ where: { id } });
+  }
+
   async findOrCreateFromTelegram(user: {
     id: number;
     username?: string;

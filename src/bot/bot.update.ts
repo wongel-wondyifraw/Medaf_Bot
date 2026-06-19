@@ -52,6 +52,9 @@ export class BotUpdate {
   private readonly adminOrdersInteractivePageSize = 5;
   /** Read-only order lists use compact one-line rows. */
   private readonly adminOrdersReadOnlyPageSize = 10;
+  private readonly myOrdersPageSize = 5;
+  private readonly adminResellersPageSize = 10;
+  private readonly adminResellerOrdersPageSize = 5;
 
   private readonly adminOrderStatusCategories: Array<{
     status: Order['status'];
@@ -61,6 +64,7 @@ export class BotUpdate {
     { status: 'awaiting_approval', label: 'Awaiting approval', emoji: '✅' },
     { status: 'awaiting_payment', label: 'Awaiting payment', emoji: '💳' },
     { status: 'pending', label: 'In progress', emoji: '📦' },
+    { status: 'shipping', label: 'Shipping', emoji: '🚚' },
     { status: 'completed', label: 'Delivered', emoji: '✓' },
     { status: 'cancelled', label: 'Cancelled', emoji: '✗' },
   ];
@@ -146,10 +150,13 @@ export class BotUpdate {
     await this.replyMyOrders(ctx);
   }
 
-  @Action('user:myorders')
+  @Action(/^user:myorders(?::(\d+))?$/)
   async onMyOrdersButton(@Ctx() ctx: Context) {
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const page = parseInt(match?.[1] || '0', 10) || 0;
+    const isPagination = !!match?.[1];
     await this.safeAnswer(ctx, '', false);
-    await this.replyMyOrders(ctx);
+    await this.showMyOrders(ctx, page, isPagination ? 'edit' : 'reply');
   }
 
   @Command('release')
@@ -765,7 +772,7 @@ export class BotUpdate {
         return;
       }
 
-      if (order.status === 'pending') {
+      if (order.status === 'pending' || order.status === 'shipping') {
         await this.safeAnswer(ctx, 'This order is already confirmed and cannot be cancelled here.', true);
         return;
       }
@@ -1097,6 +1104,29 @@ export class BotUpdate {
     await this.showAdminOrdersByStatus(ctx, status, 'edit', page);
   }
 
+  @Action(/^admin:resellers(?::(\d+))?$/)
+  async onAdminResellersList(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const page = parseInt(match?.[1] || '0', 10) || 0;
+    await this.safeAnswer(ctx, 'Loading resellers...', false);
+    await this.showAdminResellersList(ctx, 'edit', page);
+  }
+
+  @Action(/^admin:reseller-orders:(\d+)(?::(\d+))?$/)
+  async onAdminResellerOrders(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const resellerId = parseInt(match?.[1] || '0', 10);
+    const page = parseInt(match?.[2] || '0', 10) || 0;
+    if (!resellerId) {
+      await this.safeAnswer(ctx, 'Invalid reseller.', true);
+      return;
+    }
+    await this.safeAnswer(ctx, 'Loading...', false);
+    await this.showAdminResellerOrders(ctx, resellerId, 'edit', page);
+  }
+
   @Action(/^admin:approval(?::(\d+))?$/)
   async onAdminApproval(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -1224,6 +1254,45 @@ export class BotUpdate {
     await ctx.reply(`Enter the rejection reason for order #${orderId}:`);
   }
 
+  @Action(/^admin:ship:(\d+)$/)
+  async onAdminMarkShipping(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+      if (order.status === 'shipping') {
+        await this.safeAnswer(ctx, `Order #${orderId} is already marked shipping.`, false);
+      } else if (order.status !== 'pending') {
+        await this.safeAnswer(ctx, 'Only in-progress orders can be marked shipping.', true);
+        return;
+      } else {
+        await this.orders.markShipping(orderId);
+        const from = ctx.from;
+        this.logger.log(
+          `Order #${orderId} marked shipping by admin telegramId=${from?.id}`,
+        );
+        await this.safeAnswer(ctx, `🚚 Order #${orderId} marked shipping.`, false);
+      }
+
+      const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+      const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
+      await this.showAdminOrdersByStatus(ctx, 'pending', 'edit', page);
+    } catch (err) {
+      this.fileLogger.logError('adminMarkShipping', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not mark order shipping. Please try again.', true);
+    }
+  }
+
   @Action(/^admin:done:(\d+)$/)
   async onAdminMarkDone(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -1244,8 +1313,12 @@ export class BotUpdate {
         await this.safeAnswer(ctx, 'That order was cancelled and cannot be marked done.', true);
         return;
       }
+      const previousStatus = order.status;
       if (order.status === 'completed') {
         await this.safeAnswer(ctx, `Order #${orderId} was already marked done.`, false);
+      } else if (order.status !== 'shipping') {
+        await this.safeAnswer(ctx, 'Only shipping orders can be marked delivered.', true);
+        return;
       } else {
         await this.orders.markCompleted(orderId);
         const from = ctx.from;
@@ -1257,7 +1330,12 @@ export class BotUpdate {
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      await this.showAdminOrdersByStatus(ctx, 'pending', 'edit', page);
+      await this.showAdminOrdersByStatus(
+        ctx,
+        previousStatus === 'shipping' ? 'shipping' : 'pending',
+        'edit',
+        page,
+      );
     } catch (err) {
       this.fileLogger.logError('adminMarkDone', err, { orderId });
       await this.safeAnswer(ctx, 'Could not mark order done. Please try again.', true);
@@ -1291,7 +1369,8 @@ export class BotUpdate {
       if (
         order.status !== 'awaiting_approval' &&
         order.status !== 'awaiting_payment' &&
-        order.status !== 'pending'
+        order.status !== 'pending' &&
+        order.status !== 'shipping'
       ) {
         await this.safeAnswer(ctx, 'This order cannot be cancelled.', true);
         return;
@@ -2728,6 +2807,204 @@ export class BotUpdate {
     }
   }
 
+  private async showAdminResellersList(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+    page = 0,
+  ): Promise<void> {
+    const pageSize = this.adminResellersPageSize;
+    const totalCount = await this.orders.countResellersWithOrders();
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const resellers = await this.orders.findResellersWithOrderCounts({
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const body = this.buildAdminResellersListMessage(resellers, safePage, totalCount);
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminResellersListKeyboard(resellers, safePage, totalPages),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, payload);
+      } else {
+        await ctx.reply(body, payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminResellersList', err, {
+        page: safePage,
+        totalCount,
+      });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load the reseller list. Try again or use Prev/Next.',
+      );
+    }
+  }
+
+  private async showAdminResellerOrders(
+    ctx: Context,
+    resellerId: number,
+    mode: 'reply' | 'edit',
+    page = 0,
+  ): Promise<void> {
+    const pageSize = this.adminResellerOrdersPageSize;
+    const totalCount = await this.orders.countByResellerId(resellerId);
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const orders = await this.orders.findByResellerId(resellerId, {
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const resellerInfo = await this.findResellerSummaryForAdmin(resellerId);
+    const body = this.buildAdminResellerOrdersMessage(
+      orders,
+      resellerInfo,
+      safePage,
+      totalCount,
+    );
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminResellerOrdersKeyboard(resellerId, safePage, totalPages),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, payload);
+      } else {
+        await ctx.reply(body, payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminResellerOrders', err, {
+        resellerId,
+        page: safePage,
+        totalCount,
+      });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load this reseller\u2019s orders. Try again or use Prev/Next.',
+      );
+    }
+  }
+
+  private async findResellerSummaryForAdmin(
+    resellerId: number,
+  ): Promise<{ fullName: string; phoneNumber: string | null }> {
+    const reseller = await this.resellers.findById(resellerId);
+    return {
+      fullName: reseller?.fullName || 'Unknown',
+      phoneNumber: reseller?.phoneNumber ?? null,
+    };
+  }
+
+  private buildAdminResellersListMessage(
+    resellers: Awaited<ReturnType<OrdersService['findResellersWithOrderCounts']>>,
+    page: number,
+    totalCount: number,
+  ): string {
+    const pageSize = this.adminResellersPageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const lines = [
+      '<b>👤 Resellers</b>',
+      '',
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> reseller(s) with orders`,
+    ];
+
+    if (resellers.length === 0) {
+      lines.push('', '<i>No resellers with orders yet.</i>');
+      return lines.join('\n');
+    }
+
+    const baseIndex = page * pageSize;
+    resellers.forEach((r, idx) => {
+      const name = this.escapeHtml(r.fullName.slice(0, 40));
+      const phone = this.escapeHtml(this.formatPhone(r.phoneNumber));
+      lines.push('');
+      lines.push(
+        `<b>${baseIndex + idx + 1}.</b> ${name} · ${phone} · <b>${r.orderCount}</b> order(s)`,
+      );
+    });
+
+    lines.push('', '<i>Tap a reseller below to view their orders.</i>');
+    return lines.join('\n');
+  }
+
+  private adminResellersListKeyboard(
+    resellers: Awaited<ReturnType<OrdersService['findResellersWithOrderCounts']>>,
+    page: number,
+    totalPages: number,
+  ) {
+    const rows: InlineKeyboardButton[][] = resellers.map((r) => [
+      Markup.button.callback(
+        `${r.fullName.slice(0, 28)} (${r.orderCount})`,
+        `admin:reseller-orders:${r.resellerId}`,
+      ),
+    ]);
+    const nav = this.buildPaginationButtons(
+      (p) => (p <= 0 ? 'admin:resellers' : `admin:resellers:${p}`),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+    rows.push([Markup.button.callback('← All categories', 'admin:orders')]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private buildAdminResellerOrdersMessage(
+    orders: Order[],
+    reseller: { fullName: string; phoneNumber: string | null },
+    page: number,
+    totalCount: number,
+  ): string {
+    const pageSize = this.adminResellerOrdersPageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const name = this.escapeHtml(reseller.fullName);
+    const phone = this.escapeHtml(this.formatPhone(reseller.phoneNumber));
+    const lines = [
+      `<b>👤 ${name}</b>`,
+      `Phone: ${phone}`,
+      '',
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
+    ];
+
+    if (orders.length === 0) {
+      lines.push('', '<i>No orders for this reseller.</i>');
+      return lines.join('\n');
+    }
+
+    const baseIndex = page * pageSize;
+    orders.forEach((o, idx) => {
+      lines.push('');
+      this.appendAdminOrderDetailLines(lines, o, baseIndex + idx, true);
+    });
+
+    return lines.join('\n');
+  }
+
+  private adminResellerOrdersKeyboard(
+    resellerId: number,
+    page: number,
+    totalPages: number,
+  ) {
+    const rows: InlineKeyboardButton[][] = [];
+    const nav = this.buildPaginationButtons(
+      (p) =>
+        p <= 0
+          ? `admin:reseller-orders:${resellerId}`
+          : `admin:reseller-orders:${resellerId}:${p}`,
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+    rows.push([Markup.button.callback('← All resellers', 'admin:resellers')]);
+    rows.push([Markup.button.callback('← All categories', 'admin:orders')]);
+    rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
   private async showApprovalQueue(
     ctx: Context,
     mode: 'reply' | 'edit',
@@ -2780,6 +3057,8 @@ export class BotUpdate {
         return report.awaitingPayment;
       case 'pending':
         return report.pending;
+      case 'shipping':
+        return report.shipping;
       case 'completed':
         return report.completed;
       case 'cancelled':
@@ -2806,7 +3085,7 @@ export class BotUpdate {
       const count = this.adminOrderStatusCount(report, category.status);
       lines.push(`• ${category.emoji} <b>${category.label}</b>: ${count}`);
     }
-    lines.push('', '<i>Tap a category below.</i>');
+    lines.push('', '<i>Tap a category below, or browse by reseller.</i>');
     return lines.join('\n');
   }
 
@@ -2819,6 +3098,7 @@ export class BotUpdate {
         `admin:orders:${category.status}`,
       ),
     ]);
+    rows.push([Markup.button.callback('👤 Resellers', 'admin:resellers')]);
     rows.push([Markup.button.callback('← Back to menu', 'admin:menu')]);
     return Markup.inlineKeyboard(rows);
   }
@@ -2858,6 +3138,8 @@ export class BotUpdate {
     if (status === 'awaiting_approval') {
       lines.push('', '<i>Use the buttons below to approve, adjust price, reject, or cancel.</i>');
     } else if (status === 'pending') {
+      lines.push('', '<i>Mark shipping or cancel an order using the buttons below.</i>');
+    } else if (status === 'shipping') {
       lines.push('', '<i>Confirm delivery or cancel an order using the buttons below.</i>');
     } else if (status === 'awaiting_payment') {
       lines.push('', '<i>Open the product link or cancel an order using the buttons below.</i>');
@@ -2884,6 +3166,13 @@ export class BotUpdate {
         rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
       }
     } else if (status === 'pending') {
+      for (const o of orders) {
+        rows.push([
+          Markup.button.callback(`🚚 Mark shipping #${o.id}`, `admin:ship:${o.id}`),
+          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
+        ]);
+      }
+    } else if (status === 'shipping') {
       for (const o of orders) {
         rows.push([
           Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
@@ -2914,6 +3203,7 @@ export class BotUpdate {
   private adminOrdersPageSizeFor(status: Order['status']): number {
     if (
       status === 'pending' ||
+      status === 'shipping' ||
       status === 'awaiting_approval' ||
       status === 'awaiting_payment'
     ) {
@@ -3047,6 +3337,14 @@ export class BotUpdate {
   }
 
   private async replyMyOrders(ctx: Context): Promise<void> {
+    await this.showMyOrders(ctx, 0, 'reply');
+  }
+
+  private async showMyOrders(
+    ctx: Context,
+    page = 0,
+    mode: 'reply' | 'edit',
+  ): Promise<void> {
     const from = ctx.from;
     if (!from) return;
 
@@ -3056,18 +3354,55 @@ export class BotUpdate {
       return;
     }
 
-    const orders = await this.orders.findByResellerId(reseller.id);
-    await ctx.reply(this.buildMyOrdersMessage(orders), {
-      parse_mode: 'HTML',
-      ...(await this.stickyReplyKeyboardFor(from.id)),
+    const pageSize = this.myOrdersPageSize;
+    const totalCount = await this.orders.countByResellerId(reseller.id);
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const orders = await this.orders.findByResellerId(reseller.id, {
+      limit: pageSize,
+      offset: safePage * pageSize,
     });
+    const body = this.buildMyOrdersMessage(orders, safePage, totalCount);
+    const keyboard = this.myOrdersKeyboard(safePage, totalPages);
+    const sticky = await this.stickyReplyKeyboardFor(from.id);
+
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, {
+          parse_mode: 'HTML',
+          ...keyboard,
+        });
+      } else {
+        await ctx.reply(body, {
+          parse_mode: 'HTML',
+          ...keyboard,
+          ...sticky,
+        });
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('myOrders', err, { page: safePage, totalCount });
+      if (mode === 'edit') {
+        await ctx.reply(body, {
+          parse_mode: 'HTML',
+          ...keyboard,
+          ...sticky,
+        });
+      }
+    }
   }
 
-  private buildMyOrdersMessage(orders: Order[]): string {
+  private buildMyOrdersMessage(
+    orders: Order[],
+    page: number,
+    totalCount: number,
+  ): string {
+    const pageSize = this.myOrdersPageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const lines = [
       '<b>📋 My orders</b>',
       '',
-      `Showing your last <b>${orders.length}</b> order(s).`,
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
     ];
 
     if (orders.length === 0) {
@@ -3092,6 +3427,21 @@ export class BotUpdate {
     return lines.join('\n');
   }
 
+  private myOrdersPageCallback(page: number): string {
+    return page <= 0 ? 'user:myorders' : `user:myorders:${page}`;
+  }
+
+  private myOrdersKeyboard(page: number, totalPages: number) {
+    const rows: InlineKeyboardButton[][] = [];
+    const nav = this.buildPaginationButtons(
+      (p) => this.myOrdersPageCallback(p),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+    return rows.length > 0 ? Markup.inlineKeyboard(rows) : {};
+  }
+
   private formatResellerOrderStatus(status: Order['status']): string {
     switch (status) {
       case 'awaiting_approval':
@@ -3100,6 +3450,8 @@ export class BotUpdate {
         return '💳 Awaiting your payment';
       case 'pending':
         return '📦 Confirmed — in progress';
+      case 'shipping':
+        return '🚚 Shipping — on the way';
       case 'completed':
         return '✓ Completed';
       case 'cancelled':
@@ -3153,7 +3505,7 @@ export class BotUpdate {
       'Choose an option:',
       '• <b>Report</b> — order stats and recent orders',
       '• <b>Approvals</b> — review new order requests',
-      '• <b>Orders</b> — browse orders by status (approval, payment, in progress, delivered, cancelled)',
+      '• <b>Orders</b> — browse orders by status, shipping stage, or reseller',
       '• <b>Settings</b> — bot config and admin list',
     ];
     if (telegramId != null && this.healthReport.isHealthReportRecipient(telegramId)) {
@@ -3170,6 +3522,7 @@ export class BotUpdate {
       report.awaitingApproval +
       report.awaitingPayment +
       report.pending +
+      report.shipping +
       report.cancelled +
       report.completed;
     const lines = [
@@ -3177,7 +3530,8 @@ export class BotUpdate {
       '',
       `<b>Total orders:</b> ${total}`,
       `✅ Awaiting approval: <b>${report.awaitingApproval}</b>   💳 Awaiting payment: <b>${report.awaitingPayment}</b>`,
-      `📦 In progress: <b>${report.pending}</b>   ✗ Cancelled: <b>${report.cancelled}</b>   ✓ Delivered: <b>${report.completed}</b>`,
+      `📦 In progress: <b>${report.pending}</b>   🚚 Shipping: <b>${report.shipping}</b>`,
+      `✗ Cancelled: <b>${report.cancelled}</b>   ✓ Delivered: <b>${report.completed}</b>`,
       '',
       '<b>Sales &amp; profit</b> (delivered orders only)',
       `🛒 Total sales: <b>${report.totalSalesEtb.toLocaleString('en-US')} ETB</b>`,
@@ -3339,6 +3693,7 @@ export class BotUpdate {
     if (status === 'awaiting_approval') return '✅ Awaiting approval';
     if (status === 'awaiting_payment') return '💳 Awaiting payment';
     if (status === 'pending') return '📦 In progress';
+    if (status === 'shipping') return '🚚 Shipping';
     if (status === 'cancelled') return '✗ Cancelled';
     if (status === 'completed') return '✓ Completed';
     return status;

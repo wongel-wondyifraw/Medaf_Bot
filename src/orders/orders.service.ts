@@ -20,10 +20,18 @@ export interface CreateOrderInput {
   profitEtb: number | null;
 }
 
+export interface ResellerOrderSummary {
+  resellerId: number;
+  fullName: string;
+  phoneNumber: string | null;
+  orderCount: number;
+}
+
 export interface OrdersReport {
   awaitingApproval: number;
   awaitingPayment: number;
   pending: number;
+  shipping: number;
   cancelled: number;
   completed: number;
   /** Sum of selling_etb for completed (delivered) orders. */
@@ -125,22 +133,77 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
+  async markShipping(id: number): Promise<Order | null> {
+    const order = await this.findById(id);
+    if (!order || order.status !== 'pending') return null;
+    order.status = 'shipping';
+    return this.repo.save(order);
+  }
+
   async markCompleted(id: number): Promise<Order | null> {
     const order = await this.findById(id);
     if (!order) return null;
     if (order.status === 'completed') return order;
     if (order.status === 'cancelled') return null;
-    if (order.status !== 'pending') return null;
+    if (order.status !== 'shipping') return null;
     order.status = 'completed';
     return this.repo.save(order);
   }
 
-  findByResellerId(resellerId: number, limit = 25): Promise<Order[]> {
+  countByResellerId(resellerId: number): Promise<number> {
+    return this.repo.count({ where: { resellerId } });
+  }
+
+  findByResellerId(
+    resellerId: number,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<Order[]> {
+    const limit = opts?.limit ?? 25;
+    const offset = opts?.offset ?? 0;
     return this.repo.find({
       where: { resellerId },
       order: { createdAt: 'DESC' },
       take: limit,
+      skip: offset,
     });
+  }
+
+  countResellersWithOrders(): Promise<number> {
+    return this.repo
+      .createQueryBuilder('o')
+      .select('COUNT(DISTINCT o.reseller_id)', 'count')
+      .getRawOne<{ count: string }>()
+      .then((row) => parseInt(row?.count || '0', 10) || 0);
+  }
+
+  findResellersWithOrderCounts(opts?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<ResellerOrderSummary[]> {
+    const limit = opts?.limit ?? 25;
+    const offset = opts?.offset ?? 0;
+    return this.repo
+      .createQueryBuilder('o')
+      .innerJoin('o.reseller', 'r')
+      .select('r.id', 'resellerId')
+      .addSelect('r.full_name', 'fullName')
+      .addSelect('r.phone_number', 'phoneNumber')
+      .addSelect('COUNT(o.id)', 'orderCount')
+      .groupBy('r.id')
+      .addGroupBy('r.full_name')
+      .addGroupBy('r.phone_number')
+      .orderBy('r.full_name', 'ASC')
+      .limit(limit)
+      .offset(offset)
+      .getRawMany<ResellerOrderSummary>()
+      .then((rows) =>
+        rows.map((row) => ({
+          resellerId: Number(row.resellerId),
+          fullName: row.fullName || 'Unknown',
+          phoneNumber: row.phoneNumber,
+          orderCount: Number(row.orderCount) || 0,
+        })),
+      );
   }
 
   countByStatus(status: OrderStatus): Promise<number> {
@@ -205,11 +268,12 @@ export class OrdersService {
   }
 
   async getReport(): Promise<OrdersReport> {
-    const [awaitingApproval, awaitingPayment, pending, cancelled, completed] =
+    const [awaitingApproval, awaitingPayment, pending, shipping, cancelled, completed] =
       await Promise.all([
         this.repo.count({ where: { status: 'awaiting_approval' } }),
         this.repo.count({ where: { status: 'awaiting_payment' } }),
         this.repo.count({ where: { status: 'pending' } }),
+        this.repo.count({ where: { status: 'shipping' } }),
         this.repo.count({ where: { status: 'cancelled' } }),
         this.repo.count({ where: { status: 'completed' } }),
       ]);
@@ -252,6 +316,7 @@ export class OrdersService {
       awaitingApproval,
       awaitingPayment,
       pending,
+      shipping,
       cancelled,
       completed,
       totalSalesEtb,
