@@ -30,6 +30,7 @@ export const CATEGORY_THREE_FACTOR_SEED: Record<string, ThreeFactors> = {
   '2pc Cloth': { low: 0.45, avg: 0.78, high: 1.18 },
   // Calibrated for ~1,830 ETB at USD $6, rate 200, delivery 250, 30% margin, ×1.1 final.
   Underwear: { low: 0.45, avg: 0.9, high: 1.15 },
+  Pijamas: { low: 0.35, avg: 0.68, high: 1.1 },
 };
 
 /** Maps category display name to env slug (PRICING_FACTOR_<SLUG>_LOW). */
