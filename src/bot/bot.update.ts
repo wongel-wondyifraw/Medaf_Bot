@@ -639,7 +639,7 @@ export class BotUpdate {
     }
     await this.safeAnswer(
       ctx,
-      'Enter the Dubai AED price from SHEIN (UAE location).',
+      this.buildAedPriceStepInstructions({ compact: true }),
       true,
     );
   }
@@ -4612,13 +4612,34 @@ export class BotUpdate {
       case 'qty-input':
         return 'Reply with a quantity (1–100), or tap "← Back" / "✗ Cancel".';
       case 'price':
-        return (
-          'Set your SHEIN location to UAE, then reply with the unit price in AED ' +
-          '(e.g. 35). Shipping and commission are added automatically.'
-        );
+        return this.buildAedPriceStepInstructions();
       case 'confirm':
         return 'Review the summary, then confirm or cancel.';
     }
+  }
+
+  private buildAedPriceStepInstructions(opts?: { compact?: boolean }): string {
+    if (opts?.compact) {
+      return [
+        '1) SHEIN Location → UAE',
+        '2) Send AED (Dirham) price',
+        '3) Tap Place order',
+        '',
+        '1) Location → UAE',
+        '2) AED (ድርሃም) ዋጋ ይላኩ',
+        '3) Order ይጫኑ',
+      ].join('\n');
+    }
+
+    return [
+      '1. Set your SHEIN app Location to United Arab Emirates (UAE).',
+      '2. Send the AED (Dirham) price you see on the app.',
+      '3. After you review the price, tap the Place order button.',
+      '',
+      '1. በSHEIN አፕሊኬሽን Location ወደ United Arab Emirates (UAE) ይቀይሩ።',
+      '2. በአፑ ላይ የሚያዩትን AED (ድርሃም) ዋጋ ይላኩ ።',
+      '3. ዋጋውን ከተመለከቱ በኋላ (Order) ሚለውን ቁልፍ ይጫኑ።',
+    ].join('\n');
   }
 
   private buildDraftKeyboard(draft: OrderDraft) {
