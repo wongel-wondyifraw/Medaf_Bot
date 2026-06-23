@@ -1254,6 +1254,54 @@ export class BotUpdate {
     await ctx.reply(`Enter the rejection reason for order #${orderId}:`);
   }
 
+  @Action(/^admin:paid:(\d+)$/)
+  async onAdminMarkPaid(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const orderId = parseInt(match?.[1] || '0', 10);
+    if (!orderId) {
+      await this.safeAnswer(ctx, 'Invalid order.', true);
+      return;
+    }
+
+    try {
+      const order = await this.orders.findById(orderId);
+      if (!order) {
+        await this.safeAnswer(ctx, 'Order not found.', true);
+        return;
+      }
+      if (order.status === 'pending' || order.status === 'completed') {
+        await this.safeAnswer(ctx, `Order #${orderId} payment was already confirmed.`, false);
+      } else if (order.status === 'cancelled') {
+        await this.safeAnswer(ctx, 'That order was cancelled.', true);
+        return;
+      } else if (order.status !== 'awaiting_payment') {
+        await this.safeAnswer(ctx, 'Only awaiting-payment orders can be marked paid.', true);
+        return;
+      } else {
+        const updated = await this.orders.confirmPayment(orderId);
+        if (!updated) {
+          await this.safeAnswer(ctx, 'Could not mark order paid.', true);
+          return;
+        }
+
+        const from = ctx.from;
+        this.logger.log(
+          `Order #${orderId} payment confirmed by admin telegramId=${from?.id}`,
+        );
+        await this.sendPaymentConfirmedToReseller(updated);
+        await this.safeAnswer(ctx, `✅ Order #${orderId} marked paid — in progress.`, false);
+      }
+
+      const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+      const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
+      await this.showAdminOrdersByStatus(ctx, 'awaiting_payment', 'edit', page);
+    } catch (err) {
+      this.fileLogger.logError('adminMarkPaid', err, { orderId });
+      await this.safeAnswer(ctx, 'Could not mark order paid. Please try again.', true);
+    }
+  }
+
   @Action(/^admin:ship:(\d+)$/)
   async onAdminMarkShipping(@Ctx() ctx: Context) {
     if (!(await this.requireAdmin(ctx))) return;
@@ -2607,6 +2655,22 @@ export class BotUpdate {
     }
   }
 
+  private async sendPaymentConfirmedToReseller(order: Order): Promise<void> {
+    const fullOrder = await this.orders.findByIdWithReseller(order.id);
+    if (!fullOrder?.reseller?.telegramId) return;
+
+    try {
+      await this.bot.telegram.sendMessage(
+        fullOrder.reseller.telegramId,
+        this.buildPaymentConfirmedMessage(fullOrder) +
+          '\n\n✓ Order placed — Medaf collation will process your order',
+        { parse_mode: 'HTML' },
+      );
+    } catch (err) {
+      this.fileLogger.logError('sendPaymentConfirmed', err, { orderId: order.id });
+    }
+  }
+
   private async sendPaymentRequestToReseller(
     order: Order,
     bankAccount: string,
@@ -3142,7 +3206,7 @@ export class BotUpdate {
     } else if (status === 'shipping') {
       lines.push('', '<i>Confirm delivery or cancel an order using the buttons below.</i>');
     } else if (status === 'awaiting_payment') {
-      lines.push('', '<i>Open the product link or cancel an order using the buttons below.</i>');
+      lines.push('', '<i>Mark paid, open the product link, or cancel an order using the buttons below.</i>');
     }
 
     return lines.join('\n');
@@ -3181,10 +3245,13 @@ export class BotUpdate {
       }
     } else if (status === 'awaiting_payment') {
       for (const o of orders) {
+        rows.push([
+          Markup.button.callback(`✅ Paid #${o.id}`, `admin:paid:${o.id}`),
+          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
+        ]);
         if (o.link) {
           rows.push([Markup.button.url(`🔗 View product #${o.id}`, o.link)]);
         }
-        rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
       }
     }
 
