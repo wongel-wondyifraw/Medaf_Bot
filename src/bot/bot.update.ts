@@ -2852,13 +2852,33 @@ export class BotUpdate {
       ...this.adminOrdersByStatusKeyboard(orders, status, safePage, totalPages),
     };
     try {
-      if (mode === 'edit') {
-        await ctx.editMessageText(body, payload);
-      } else {
-        await ctx.reply(body, payload);
-      }
+      await this.sendAdminOrdersByStatusView(ctx, mode, body, payload);
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
+      try {
+        const compactBody = this.buildAdminOrdersByStatusMessage(
+          orders,
+          status,
+          safePage,
+          totalCount,
+          { forceCompact: true },
+        );
+        const compactPayload = {
+          parse_mode: 'HTML' as const,
+          ...this.adminOrdersByStatusKeyboard(
+            orders,
+            status,
+            safePage,
+            totalPages,
+            { includeUrlButtons: false },
+          ),
+        };
+        await this.sendAdminOrdersByStatusView(ctx, mode, compactBody, compactPayload);
+        return;
+      } catch (retryErr) {
+        if (this.isMessageNotModifiedError(retryErr)) return;
+        err = retryErr;
+      }
       this.fileLogger.logError('adminOrdersByStatus', err, {
         status,
         page: safePage,
@@ -2868,6 +2888,20 @@ export class BotUpdate {
         ctx,
         'Could not load this order list. Try again or use Prev/Next if available.',
       );
+    }
+  }
+
+  private async sendAdminOrdersByStatusView(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+    body: string,
+    payload: { parse_mode: 'HTML' },
+  ): Promise<void> {
+    const text = this.clampTelegramHtml(body);
+    if (mode === 'edit') {
+      await ctx.editMessageText(text, payload);
+    } else {
+      await ctx.reply(text, payload);
     }
   }
 
@@ -3172,6 +3206,7 @@ export class BotUpdate {
     status: Order['status'],
     page: number,
     totalCount: number,
+    opts?: { forceCompact?: boolean },
   ): string {
     const pageSize = this.adminOrdersPageSizeFor(status);
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -3187,7 +3222,7 @@ export class BotUpdate {
       return lines.join('\n');
     }
 
-    const compact = this.adminOrdersUseCompactFormat(status);
+    const compact = opts?.forceCompact ?? this.adminOrdersUseCompactFormat(status);
     const baseIndex = page * pageSize;
     orders.forEach((o, idx) => {
       if (compact) {
@@ -3217,7 +3252,9 @@ export class BotUpdate {
     status: Order['status'],
     page: number,
     totalPages: number,
+    opts?: { includeUrlButtons?: boolean },
   ) {
+    const includeUrlButtons = opts?.includeUrlButtons ?? true;
     const rows: InlineKeyboardButton[][] = [];
 
     if (status === 'awaiting_approval') {
@@ -3249,8 +3286,11 @@ export class BotUpdate {
           Markup.button.callback(`✅ Paid #${o.id}`, `admin:paid:${o.id}`),
           Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
         ]);
-        if (o.link) {
-          rows.push([Markup.button.url(`🔗 View product #${o.id}`, o.link)]);
+        if (includeUrlButtons) {
+          const url = this.toValidHttpUrl(o.link);
+          if (url) {
+            rows.push([Markup.button.url(`🔗 View product #${o.id}`, url)]);
+          }
         }
       }
     }
@@ -3280,7 +3320,11 @@ export class BotUpdate {
   }
 
   private adminOrdersUseCompactFormat(status: Order['status']): boolean {
-    return status === 'completed' || status === 'cancelled';
+    return (
+      status === 'completed' ||
+      status === 'cancelled' ||
+      status === 'awaiting_payment'
+    );
   }
 
   private adminOrdersPageCallback(status: Order['status'], page: number): string {
@@ -3736,7 +3780,9 @@ export class BotUpdate {
   }
 
   private formatProductLinkHtml(link: string): string {
-    return `<a href="${this.escapeHtml(link)}">View product</a>`;
+    const url = this.toValidHttpUrl(link);
+    if (!url) return this.escapeHtml(link.slice(0, 120));
+    return `<a href="${this.escapeHtml(url)}">View product</a>`;
   }
 
   /** Plain-text Telegram callbacks drop HTML links; restore a clickable product line. */
@@ -3750,9 +3796,10 @@ export class BotUpdate {
   }
 
   private productLinkInlineKeyboard(link: string | null | undefined) {
-    if (!link) return undefined;
+    const url = this.toValidHttpUrl(link);
+    if (!url) return undefined;
     return Markup.inlineKeyboard([
-      [Markup.button.url('🔗 View product', link)],
+      [Markup.button.url('🔗 View product', url)],
     ]);
   }
 
@@ -3791,6 +3838,36 @@ export class BotUpdate {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  /** Telegram url buttons and HTML links require a valid http(s) URL (max 2048 chars). */
+  private toValidHttpUrl(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    const trimmed = raw.trim().replace(/\s+/g, '');
+    if (!trimmed) return null;
+
+    let candidate = trimmed;
+    if (!/^https?:\/\//i.test(candidate)) {
+      if (/^[a-z0-9.-]+\.[a-z]{2,}/i.test(candidate)) {
+        candidate = `https://${candidate}`;
+      } else {
+        return null;
+      }
+    }
+
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      const href = parsed.href;
+      return href.length > 2048 ? href.slice(0, 2048) : href;
+    } catch {
+      return null;
+    }
+  }
+
+  private clampTelegramHtml(text: string, max = 4096): string {
+    if (text.length <= max) return text;
+    return `${text.slice(0, max - 24)}\n\n<i>…message truncated</i>`;
   }
 
   private async buildSettingsMessage(): Promise<string> {
