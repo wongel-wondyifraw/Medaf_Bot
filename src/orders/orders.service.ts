@@ -150,27 +150,41 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
-  countByResellerId(resellerId: number): Promise<number> {
-    return this.repo.count({ where: { resellerId } });
+  countByResellerId(
+    resellerId: number,
+    opts?: { excludeCancelled?: boolean },
+  ): Promise<number> {
+    const qb = this.repo
+      .createQueryBuilder('o')
+      .where('o.reseller_id = :resellerId', { resellerId });
+    if (opts?.excludeCancelled) {
+      qb.andWhere("o.status <> 'cancelled'");
+    }
+    return qb.getCount();
   }
 
   findByResellerId(
     resellerId: number,
-    opts?: { limit?: number; offset?: number },
+    opts?: { limit?: number; offset?: number; excludeCancelled?: boolean },
   ): Promise<Order[]> {
     const limit = opts?.limit ?? 25;
     const offset = opts?.offset ?? 0;
-    return this.repo.find({
-      where: { resellerId },
-      order: { createdAt: 'DESC' },
-      take: limit,
-      skip: offset,
-    });
+    const qb = this.repo
+      .createQueryBuilder('o')
+      .where('o.reseller_id = :resellerId', { resellerId })
+      .orderBy('o.created_at', 'DESC')
+      .take(limit)
+      .skip(offset);
+    if (opts?.excludeCancelled) {
+      qb.andWhere("o.status <> 'cancelled'");
+    }
+    return qb.getMany();
   }
 
   countResellersWithOrders(): Promise<number> {
     return this.repo
       .createQueryBuilder('o')
+      .where("o.status <> 'cancelled'")
       .select('COUNT(DISTINCT o.reseller_id)', 'count')
       .getRawOne<{ count: string }>()
       .then((row) => parseInt(row?.count || '0', 10) || 0);
@@ -185,6 +199,7 @@ export class OrdersService {
     return this.repo
       .createQueryBuilder('o')
       .innerJoin('o.reseller', 'r')
+      .where("o.status <> 'cancelled'")
       .select('r.id', 'resellerId')
       .addSelect('r.full_name', 'fullName')
       .addSelect('r.phone_number', 'phoneNumber')

@@ -2949,12 +2949,15 @@ export class BotUpdate {
     page = 0,
   ): Promise<void> {
     const pageSize = this.adminResellerOrdersPageSize;
-    const totalCount = await this.orders.countByResellerId(resellerId);
+    const totalCount = await this.orders.countByResellerId(resellerId, {
+      excludeCancelled: true,
+    });
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const safePage = Math.min(Math.max(0, page), totalPages - 1);
     const orders = await this.orders.findByResellerId(resellerId, {
       limit: pageSize,
       offset: safePage * pageSize,
+      excludeCancelled: true,
     });
     const resellerInfo = await this.findResellerSummaryForAdmin(resellerId);
     const body = this.buildAdminResellerOrdersMessage(
@@ -3522,16 +3525,20 @@ export class BotUpdate {
     }
 
     for (const o of orders) {
-      const title = this.escapeHtml((o.productTitle || 'Product').slice(0, 50));
+      const title = this.escapeHtml((o.productTitle || 'Product').slice(0, 60));
       const status = this.formatResellerOrderStatus(o.status);
-      const price = `${o.sellingEtb.toLocaleString('en-US')} ETB`;
+      const price = this.formatOrderPrice(o);
       const date = this.escapeHtml(formatGmtPlus3(o.createdAt));
       const variant = this.formatOrderVariant(o);
+      const link = this.formatOrderLink(o);
       lines.push('');
-      lines.push(`<b>#${o.id}</b> — ${status}`);
-      lines.push(`${title}`);
-      lines.push(`${price} · ${date}`);
-      if (variant) lines.push(this.escapeHtml(variant));
+      lines.push(`<b>#${o.id}</b>`);
+      lines.push(`Stage: ${status}`);
+      lines.push(`Product: ${title}`);
+      if (variant) lines.push(`Variant: ${this.escapeHtml(variant)}`);
+      lines.push(`Price: ${price}`);
+      lines.push(`Placed: ${date}`);
+      if (link) lines.push(`Link: ${link}`);
     }
 
     lines.push('', '<i>Send a SHEIN link to place a new order.</i>');
