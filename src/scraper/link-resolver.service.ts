@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { linkInvalidReasons } from '../i18n/reseller-messages';
 
 /**
  * Result of classifying a user-supplied SHEIN message. Currently every
@@ -132,32 +133,27 @@ export class LinkResolverService {
   classify(input: string): LinkClassification {
     const url = this.extractUrl(input);
     if (!url) {
-      return { kind: 'invalid', reason: 'No URL found in your message.' };
+      return { kind: 'invalid', reason: linkInvalidReasons.noUrl() };
     }
 
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      return { kind: 'invalid', reason: 'That does not look like a valid URL.' };
+      return { kind: 'invalid', reason: linkInvalidReasons.invalidUrl() };
     }
 
     const host = parsed.hostname.toLowerCase();
     const isShein = /(^|\.)shein\.com$/i.test(host) || /(^|\.)shein\.top$/i.test(host);
     if (!isShein) {
-      return { kind: 'invalid', reason: 'That URL does not look like a SHEIN link.' };
+      return { kind: 'invalid', reason: linkInvalidReasons.notSheinHost() };
     }
 
     const productId = parsed.pathname.match(/-p-(\d+)\.html$/i)?.[1] ?? null;
     const isShare = this.isShareLink(url);
 
     if (!isShare && !productId) {
-      return {
-        kind: 'invalid',
-        reason:
-          'That SHEIN link is not a product page. Send the URL of a product detail page ' +
-          '(ends with "-p-<number>.html").',
-      };
+      return { kind: 'invalid', reason: linkInvalidReasons.notProductPage() };
     }
 
     // All valid SHEIN links — desktop, mobile, share — go through the

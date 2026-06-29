@@ -21,6 +21,7 @@ import { Category } from '../categories/category.entity';
 import { formatGmtPlus3 } from '../common/date-format';
 import { FileLoggerService } from '../common/logger.service';
 import { AppConfig } from '../config/configuration';
+import { bilingualLabel, resellerButtons, resellerMessages } from '../i18n/reseller-messages';
 import { HealthNotificationsService } from '../health/health-notifications.service';
 import { HealthReportService } from '../health/health-report.service';
 import { OrdersService, computeDownPaymentEtb } from '../orders/orders.service';
@@ -44,8 +45,8 @@ import { SETTING_KEYS, SettingsService } from '../settings/settings.service';
 @Update()
 export class BotUpdate {
   private readonly logger = new Logger(BotUpdate.name);
-  private readonly myOrdersButtonLabel = '📋 My orders';
-  private readonly updateButtonLabel = '🔄 Update';
+  private readonly myOrdersButtonLabel = resellerButtons.myOrders;
+  private readonly updateButtonLabel = resellerButtons.update;
   private readonly adminApprovalsButtonLabel = '✅ Approvals';
   private readonly adminOrdersButtonLabel = '📋 Orders';
   /** Orders with action buttons — keep small to stay under Telegram's 4096-char limit. */
@@ -103,18 +104,13 @@ export class BotUpdate {
   }
 
   private askForName(ctx: Context) {
-    return ctx.reply(
-      'Welcome to Medaf SHEIN orders.\n\n' +
-        'Before placing your first order, please complete a quick registration.\n\n' +
-        'What is your full name?',
-      Markup.removeKeyboard(),
-    );
+    return ctx.reply(resellerMessages.registration.welcomeAskName(), Markup.removeKeyboard());
   }
 
   private askForPhone(ctx: Context) {
     return ctx.reply(
-      'Thank you. Please share your phone number using the button below to finish registration.',
-      Markup.keyboard([Markup.button.contactRequest('📱 Share my phone number')])
+      resellerMessages.registration.askPhone(),
+      Markup.keyboard([Markup.button.contactRequest(resellerButtons.sharePhone)])
         .oneTime()
         .resize(),
     );
@@ -286,7 +282,7 @@ export class BotUpdate {
     if (!from || !message?.contact) return;
 
     if (message.contact.user_id && message.contact.user_id !== from.id) {
-      await ctx.reply('Please share your own phone number, not someone else\u2019s.');
+      await ctx.reply(resellerMessages.registration.wrongContact());
       return;
     }
 
@@ -299,7 +295,7 @@ export class BotUpdate {
 
     await this.resellers.setPhoneNumber(from.id, message.contact.phone_number || '');
     await ctx.reply(
-      'Registration complete. Welcome to Medaf SHEIN orders — send a SHEIN product link to place your order.',
+      resellerMessages.registration.complete(),
       await this.stickyReplyKeyboardFor(from.id),
     );
   }
@@ -367,7 +363,7 @@ export class BotUpdate {
 
     if (!reseller.fullName) {
       if (text.length < 2 || text.length > 80) {
-        await ctx.reply('Please enter your full name (2-80 characters).');
+        await ctx.reply(resellerMessages.registration.nameInvalid());
         return;
       }
       await this.resellers.setFullName(from.id, text);
@@ -381,7 +377,7 @@ export class BotUpdate {
     }
 
     if (!/shein/i.test(text)) {
-      await ctx.reply('Please send a valid SHEIN product link.');
+      await ctx.reply(resellerMessages.links.notShein());
       return;
     }
 
@@ -416,7 +412,7 @@ export class BotUpdate {
     url: string,
     productId: string | null,
   ): Promise<void> {
-    await ctx.reply('Preparing product details, please wait...');
+    await ctx.reply(resellerMessages.links.preparing());
 
     const freeText = extractFreeText(rawMessage);
     const slugTitle = extractSlugTitle(url);
@@ -568,18 +564,18 @@ export class BotUpdate {
     if (!from) return;
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
       return;
     }
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const qty = parseInt(match?.[1] || '0', 10);
     if (!Number.isFinite(qty) || qty < 1 || qty > 100) {
-      await this.safeAnswer(ctx, 'Invalid quantity.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.invalidQuantity(), true);
       return;
     }
     const updated = this.orderDraft.selectQuantity(from.id, qty);
     if (!updated) return;
-    await this.safeAnswer(ctx, `Quantity: ${qty}`, false);
+    await this.safeAnswer(ctx, resellerMessages.orderActions.quantityToast(qty), false);
     await this.editDraftMessage(ctx, updated);
   }
 
@@ -589,16 +585,16 @@ export class BotUpdate {
     if (!from) return;
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
       return;
     }
     if (draft.step !== 'qty') {
-      await this.safeAnswer(ctx, 'Not on the quantity step.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.notOnQuantityStep(), true);
       return;
     }
     const updated = this.orderDraft.enterQuantityInputMode(from.id);
     if (!updated) {
-      await this.safeAnswer(ctx, 'Could not open custom quantity input.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.couldNotOpenQtyInput(), true);
       return;
     }
     await this.safeAnswer(ctx, '', false);
@@ -611,11 +607,11 @@ export class BotUpdate {
     if (!from) return;
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
       return;
     }
     if (draft.step !== 'qty-input') {
-      await this.safeAnswer(ctx, 'Not on the custom quantity step.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.notOnCustomQuantityStep(), true);
       return;
     }
     const updated = this.orderDraft.exitQuantityInputMode(from.id);
@@ -630,11 +626,11 @@ export class BotUpdate {
     if (!from) return;
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
       return;
     }
     if (draft.step !== 'price') {
-      await this.safeAnswer(ctx, 'Not on the price step.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.notOnPriceStep(), true);
       return;
     }
     await this.safeAnswer(
@@ -649,7 +645,7 @@ export class BotUpdate {
     const from = ctx.from;
     if (!from) return;
     this.orderDraft.clearDraft(from.id);
-    await this.safeAnswer(ctx, 'Order cancelled.', false);
+    await this.safeAnswer(ctx, resellerMessages.orderDraft.cancelled(), false);
     try {
       await ctx.editMessageReplyMarkup(undefined);
     } catch (err) {
@@ -664,25 +660,25 @@ export class BotUpdate {
     if (!from) return;
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
-      await this.safeAnswer(ctx, 'Order session expired. Send the link again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
       return;
     }
 
     try {
       const reseller = await this.resellers.findByTelegramId(from.id);
       if (!reseller) {
-        await this.safeAnswer(ctx, 'Please /start the bot to register first.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.registerFirst(), true);
         return;
       }
       if (!reseller.isRegistered()) {
-        await this.safeAnswer(ctx, 'Please finish registration before placing an order.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.finishRegistration(), true);
         return;
       }
 
       if (draft.step !== 'confirm') {
         await this.safeAnswer(
           ctx,
-          'Please complete the unit price step before confirming.',
+          resellerMessages.orderActions.completePriceFirst(),
           true,
         );
         return;
@@ -715,12 +711,12 @@ export class BotUpdate {
       );
 
       const summary =
-        this.buildDraftMessage(draft) + '\n\n⏳ Submitted — awaiting admin approval';
+        this.buildDraftMessage(draft) + '\n\n' + resellerMessages.orderDraft.submitted();
       try {
         await ctx.editMessageText(summary, {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
-            Markup.button.callback('❌ Cancel request', `cancel:${order.id}`),
+            Markup.button.callback(resellerButtons.cancelRequest, `cancel:${order.id}`),
           ]),
         });
       } catch (err) {
@@ -729,10 +725,10 @@ export class BotUpdate {
         }
       }
       await this.adminNotifications.notifyAdminsNewOrder(order);
-      await this.safeAnswer(ctx, 'Request submitted! We will review it shortly.', false);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.requestSubmitted(), false);
     } catch (err) {
       this.fileLogger.logError('orderConfirm', err, { draft });
-      await this.safeAnswer(ctx, 'Could not save your order. Please try again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.couldNotSave(), true);
     }
   }
 
@@ -744,52 +740,58 @@ export class BotUpdate {
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const orderId = parseInt(match?.[1] || '0', 10);
     if (!orderId) {
-      await this.safeAnswer(ctx, 'Invalid order.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.invalidOrder(), true);
       return;
     }
 
     try {
       const order = await this.orders.findById(orderId);
       if (!order) {
-        await this.safeAnswer(ctx, 'Order not found.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.orderNotFound(), true);
         return;
       }
 
       const reseller = await this.resellers.findByTelegramId(from.id);
       if (!reseller || reseller.id !== order.resellerId) {
-        await this.safeAnswer(ctx, 'You can only cancel your own orders.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.cancelOwnOnly(), true);
         return;
       }
 
       if (order.status === 'cancelled') {
-        await this.replaceStatusAndRemoveButtons(ctx, '✗ Order cancelled');
-        await this.safeAnswer(ctx, 'Order was already cancelled.', false);
+        await this.replaceStatusAndRemoveButtons(
+          ctx,
+          resellerMessages.orderActions.statusCancelled(),
+        );
+        await this.safeAnswer(ctx, resellerMessages.orderActions.alreadyCancelled(), false);
         return;
       }
 
       if (order.status === 'completed') {
-        await this.safeAnswer(ctx, 'This order was already completed.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.alreadyCompleted(), true);
         return;
       }
 
       if (order.status === 'pending' || order.status === 'shipping') {
-        await this.safeAnswer(ctx, 'This order is already confirmed and cannot be cancelled here.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.cannotCancelConfirmed(), true);
         return;
       }
 
       if (order.status !== 'awaiting_approval' && order.status !== 'awaiting_payment') {
-        await this.safeAnswer(ctx, 'This order cannot be cancelled.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.cannotCancel(), true);
         return;
       }
 
       await this.orders.cancel(orderId);
       this.logger.log(`Order #${orderId} cancelled by reseller ${reseller.id}`);
 
-      await this.replaceStatusAndRemoveButtons(ctx, '✗ Order cancelled');
-      await this.safeAnswer(ctx, 'Order cancelled.', false);
+      await this.replaceStatusAndRemoveButtons(
+        ctx,
+        resellerMessages.orderActions.statusCancelled(),
+      );
+      await this.safeAnswer(ctx, resellerMessages.orderDraft.cancelled(), false);
     } catch (err) {
       this.fileLogger.logError('cancel', err, { orderId });
-      await this.safeAnswer(ctx, 'Could not cancel your order. Please try again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.couldNotCancel(), true);
     }
   }
 
@@ -801,42 +803,45 @@ export class BotUpdate {
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const orderId = parseInt(match?.[1] || '0', 10);
     if (!orderId) {
-      await this.safeAnswer(ctx, 'Invalid order.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.invalidOrder(), true);
       return;
     }
 
     try {
       const order = await this.orders.findById(orderId);
       if (!order) {
-        await this.safeAnswer(ctx, 'Order not found.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.orderNotFound(), true);
         return;
       }
 
       const reseller = await this.resellers.findByTelegramId(from.id);
       if (!reseller || reseller.id !== order.resellerId) {
-        await this.safeAnswer(ctx, 'You can only confirm your own orders.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.confirmOwnOnly(), true);
         return;
       }
 
       if (order.status === 'pending' || order.status === 'completed') {
-        await this.replaceStatusAndRemoveButtons(ctx, '✓ Payment confirmed — order placed');
-        await this.safeAnswer(ctx, 'Payment was already confirmed.', false);
+        await this.replaceStatusAndRemoveButtons(
+          ctx,
+          resellerMessages.orderActions.statusPaymentConfirmed(),
+        );
+        await this.safeAnswer(ctx, resellerMessages.orderActions.paymentAlreadyConfirmed(), false);
         return;
       }
 
       if (order.status === 'cancelled') {
-        await this.safeAnswer(ctx, 'This order was cancelled.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.orderWasCancelled(), true);
         return;
       }
 
       if (order.status !== 'awaiting_payment') {
-        await this.safeAnswer(ctx, 'This order is not awaiting payment.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.notAwaitingPayment(), true);
         return;
       }
 
       const updated = await this.orders.confirmPayment(orderId);
       if (!updated) {
-        await this.safeAnswer(ctx, 'Could not confirm payment. Please try again.', true);
+        await this.safeAnswer(ctx, resellerMessages.orderActions.couldNotConfirmPayment(), true);
         return;
       }
 
@@ -845,7 +850,8 @@ export class BotUpdate {
       try {
         await ctx.editMessageText(
           this.buildPaymentConfirmedMessage(updated) +
-            '\n\n✓ Order placed — Medaf collation will process your order',
+            '\n\n' +
+            resellerMessages.postOrder.paymentConfirmedFooter(),
           { parse_mode: 'HTML' },
         );
       } catch (err) {
@@ -853,10 +859,10 @@ export class BotUpdate {
           this.fileLogger.logError('paymentConfirmEdit', err);
         }
       }
-      await this.safeAnswer(ctx, 'Order placed!', false);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.orderPlaced(), false);
     } catch (err) {
       this.fileLogger.logError('paymentConfirm', err, { orderId });
-      await this.safeAnswer(ctx, 'Could not confirm payment. Please try again.', true);
+      await this.safeAnswer(ctx, resellerMessages.orderActions.couldNotConfirmPayment(), true);
     }
   }
 
@@ -2086,21 +2092,19 @@ export class BotUpdate {
     const trimmed = text.trim();
     if (trimmed.toLowerCase() === 'cancel') {
       this.orderDraft.clearDraft(userId);
-      await ctx.reply('Order cancelled.');
+      await ctx.reply(resellerMessages.orderDraft.cancelled());
       return;
     }
     if (trimmed.length < 1 || trimmed.length > 200) {
-      await ctx.reply(
-        'Please enter your preferences in one message (1–200 characters), e.g. ' +
-          '<code>Size M, Black</code>.',
-        { parse_mode: 'HTML' },
-      );
+      await ctx.reply(resellerMessages.orderDraft.preferencesInvalid(), {
+        parse_mode: 'HTML',
+      });
       return;
     }
 
     const updated = this.orderDraft.setPreferences(userId, trimmed);
     if (!updated) {
-      await ctx.reply('Order session expired. Send the link again.');
+      await ctx.reply(resellerMessages.orderDraft.sessionExpired());
       return;
     }
 
@@ -2124,13 +2128,13 @@ export class BotUpdate {
     const trimmed = text.trim();
     if (trimmed.toLowerCase() === 'cancel') {
       this.orderDraft.clearDraft(userId);
-      await ctx.reply('Order cancelled.');
+      await ctx.reply(resellerMessages.orderDraft.cancelled());
       return;
     }
     if (trimmed.toLowerCase() === 'back') {
       const reverted = this.orderDraft.exitQuantityInputMode(userId);
       if (!reverted) {
-        await ctx.reply('Order session expired. Send the link again.');
+        await ctx.reply(resellerMessages.orderDraft.sessionExpired());
         return;
       }
       await ctx.reply(this.buildDraftMessage(reverted), {
@@ -2144,21 +2148,19 @@ export class BotUpdate {
     // of non-digits at the edges.
     const cleaned = trimmed.replace(/[^\d]/g, '');
     if (!cleaned || cleaned !== trimmed.match(/\d+/)?.[0]) {
-      await ctx.reply(
-        'That does not look like a whole number. Send a quantity like ' +
-          '<code>7</code> (between 1 and 100), or tap "← Back" / "✗ Cancel".',
-        { parse_mode: 'HTML' },
-      );
+      await ctx.reply(resellerMessages.orderDraft.quantityNotWhole(), {
+        parse_mode: 'HTML',
+      });
       return;
     }
     const qty = parseInt(cleaned, 10);
     if (!Number.isFinite(qty) || qty < 1 || qty > 100) {
-      await ctx.reply('Quantity must be a whole number between 1 and 100.');
+      await ctx.reply(resellerMessages.orderDraft.quantityOutOfRange());
       return;
     }
     const updated = this.orderDraft.selectQuantity(userId, qty);
     if (!updated) {
-      await ctx.reply('Order session expired. Send the link again.');
+      await ctx.reply(resellerMessages.orderDraft.sessionExpired());
       return;
     }
     await ctx.reply(this.buildDraftMessage(updated), {
@@ -2176,30 +2178,25 @@ export class BotUpdate {
     const trimmed = text.trim();
     if (trimmed.toLowerCase() === 'cancel') {
       this.orderDraft.clearDraft(userId);
-      await ctx.reply('Order cancelled.');
+      await ctx.reply(resellerMessages.orderDraft.cancelled());
       return;
     }
 
     const parsed = this.parseAedInput(trimmed);
     if (parsed == null) {
-      await ctx.reply(
-        'That does not look like a price. Send a number like <code>35</code> or <code>35.50</code>, ' +
-          'or send <code>cancel</code>.',
-        { parse_mode: 'HTML' },
-      );
+      await ctx.reply(resellerMessages.orderDraft.priceInvalid(), {
+        parse_mode: 'HTML',
+      });
       return;
     }
     if (parsed <= 0 || parsed > 1_000_000) {
-      await ctx.reply('Price must be between 0.01 and 1,000,000 AED.');
+      await ctx.reply(resellerMessages.orderDraft.priceOutOfRange());
       return;
     }
 
     const updated = await this.applyUserPrice(userId, draft, parsed);
     if (!updated) {
-      await ctx.reply(
-        'Could not price this order — AED→ETB rate is not configured. ' +
-          'An admin needs to set it under Settings → AED→ETB.',
-      );
+      await ctx.reply(resellerMessages.orderDraft.priceRateNotConfigured());
       return;
     }
 
@@ -2569,11 +2566,7 @@ export class BotUpdate {
     if (discountPct == null || discountPct <= 0) return;
 
     const lines = [
-      '<b>Good news!</b>',
-      '',
-      `Medaf collation issued a <b>${discountPct}%</b> discount on your order.`,
-      '',
-      `Order <b>#${order.id}</b>`,
+      resellerMessages.postOrder.discount(discountPct, order.id),
     ];
 
     try {
@@ -2593,12 +2586,7 @@ export class BotUpdate {
     if (correctionPct == null || correctionPct <= 0) return;
 
     const lines = [
-      '<b>A quick note from Medaf collation</b>',
-      '',
-      `After reviewing your order, we applied a <b>${correctionPct}%</b> price correction to reflect the actual cost.`,
-      'Thank you for your understanding.',
-      '',
-      `Order <b>#${order.id}</b>`,
+      resellerMessages.postOrder.priceCorrection(correctionPct, order.id),
     ];
 
     try {
@@ -2617,20 +2605,13 @@ export class BotUpdate {
   ): string {
     const name = this.escapeHtml(resellerName.trim() || 'there');
     const title = this.escapeHtml((order.productTitle || 'your order').slice(0, 80));
-    const lines = [
-      `Hi <b>${name}</b>,`,
-      '',
-      `<b>Medaf store</b> has cancelled your order <b>#${order.id}</b>:`,
-      `<i>${title}</i>`,
-    ];
     const detail = cancellationMessage?.trim();
-    if (detail) {
-      lines.push('', this.escapeHtml(detail));
-    } else {
-      lines.push('', 'We\u2019re sorry \u2014 this order will not be processed.');
-    }
-    lines.push('', 'If you have questions, please contact <b>Medaf store</b>.');
-    return lines.join('\n');
+    return resellerMessages.postOrder.storeCancellation(
+      name,
+      order.id,
+      title,
+      detail ? this.escapeHtml(detail) : null,
+    );
   }
 
   private async sendMedafStoreCancellationToReseller(
@@ -2663,7 +2644,8 @@ export class BotUpdate {
       await this.bot.telegram.sendMessage(
         fullOrder.reseller.telegramId,
         this.buildPaymentConfirmedMessage(fullOrder) +
-          '\n\n✓ Order placed — Medaf collation will process your order',
+          '\n\n' +
+          resellerMessages.postOrder.paymentConfirmedFooter(),
         { parse_mode: 'HTML' },
       );
     } catch (err) {
@@ -2687,8 +2669,8 @@ export class BotUpdate {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('✅ Paid', `pay:confirm:${order.id}`),
-            Markup.button.callback('❌ Cancel', `cancel:${order.id}`),
+            Markup.button.callback(resellerButtons.paid, `pay:confirm:${order.id}`),
+            Markup.button.callback(resellerButtons.cancel, `cancel:${order.id}`),
           ],
         ]),
       });
@@ -2702,52 +2684,26 @@ export class BotUpdate {
     bankAccount: string,
     downPaymentEtb: number,
   ): string {
-    return [
-      `<b>Order #${order.id} approved by Medaf collation</b>`,
-      '',
-      `Total: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
-      `Down payment (50%): <b>${downPaymentEtb.toLocaleString('en-US')} ETB</b>`,
-      `Transfer to: <b>${this.escapeHtml(bankAccount)}</b>`,
-      '',
-      'Tap below after you have paid.',
-    ].join('\n');
+    return resellerMessages.postOrder.paymentRequest(
+      order.id,
+      order.sellingEtb.toLocaleString('en-US'),
+      downPaymentEtb.toLocaleString('en-US'),
+      this.escapeHtml(bankAccount),
+    );
   }
 
   private buildPaymentConfirmedMessage(order: Order): string {
     const downPayment =
       order.downPaymentEtb ?? computeDownPaymentEtb(order.sellingEtb);
-    return [
-      `<b>Order #${order.id}</b>`,
-      '',
-      `Total: <b>${order.sellingEtb.toLocaleString('en-US')} ETB</b>`,
-      `Down payment received: <b>${downPayment.toLocaleString('en-US')} ETB</b>`,
-    ].join('\n');
+    return resellerMessages.postOrder.paymentConfirmed(
+      order.id,
+      order.sellingEtb.toLocaleString('en-US'),
+      downPayment.toLocaleString('en-US'),
+    );
   }
 
   private buildReleaseNoteMessage(): string {
-    return [
-      '🎉 <b>Medaf Bot v2.0 is live!</b>',
-      '',
-      'We\u2019ve updated the bot to make ordering clearer and pricing fairer. Here\u2019s what\u2019s new:',
-      '',
-      '━━━━━━━━━━━━━━━━',
-      '',
-      '💰 <b>Better cost management</b>',
-      'Medaf collation reviews every order before you pay. If we can lower the price, you\u2019ll get a discount 🎁. If our estimate was off, we\u2019ll explain a small price correction politely.',
-      '',
-      '💳 <b>Simpler payments</b>',
-      'After approval, transfer <b>50%</b> to our bank account and tap <b>✅ Paid</b> in the bot. Your order is confirmed right away.',
-      '',
-      '📋 <b>See your orders</b>',
-      'Check all your orders and their status anytime — use the <b>My orders</b> button at the bottom of your chat.',
-      '',
-      '🔄 <b>Important — tap Update</b>',
-      'Please tap <b>🔄 Update</b> at the bottom of your chat to refresh the bot and load v2.0.',
-      '',
-      '━━━━━━━━━━━━━━━━',
-      '',
-      '🙏 Thank you for ordering with <b>Medaf collation</b>.',
-    ].join('\n');
+    return resellerMessages.release.body();
   }
 
   private async countReleaseRecipients(): Promise<{
@@ -3430,10 +3386,10 @@ export class BotUpdate {
     if (!reseller) return;
     if (reseller.isRegistered()) {
       const intro = refreshed
-        ? '✅ <b>Medaf Bot updated!</b> You\u2019re on the latest version.\n\nSend a SHEIN product link to place your order.'
-        : 'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.';
+        ? resellerMessages.registration.updated()
+        : resellerMessages.registration.welcomeRegistered();
       await ctx.reply(intro, {
-        parse_mode: refreshed ? 'HTML' : undefined,
+        parse_mode: 'HTML',
         ...(await this.stickyReplyKeyboardFor(from?.id)),
       });
       return;
@@ -3444,7 +3400,7 @@ export class BotUpdate {
       await this.askForPhone(ctx);
     } else {
       await ctx.reply(
-        'Welcome to Medaf SHEIN orders.\nSend a SHEIN product link to place your order.',
+        resellerMessages.registration.welcomeRegistered(),
         await this.stickyReplyKeyboardFor(from?.id),
       );
     }
@@ -3464,7 +3420,7 @@ export class BotUpdate {
 
     const reseller = await this.resellers.findByTelegramId(from.id);
     if (!reseller?.isRegistered()) {
-      await ctx.reply('Please complete registration with /start before viewing orders.');
+      await ctx.reply(resellerMessages.registration.myOrdersRequiresRegistration());
       return;
     }
 
@@ -3514,34 +3470,42 @@ export class BotUpdate {
     const pageSize = this.myOrdersPageSize;
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const lines = [
-      '<b>📋 My orders</b>',
+      resellerMessages.myOrders.header(),
       '',
-      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
+      resellerMessages.myOrders.pageInfo(page + 1, totalPages, totalCount),
     ];
 
     if (orders.length === 0) {
-      lines.push('', '<i>No orders yet. Send a SHEIN link to place your first order.</i>');
+      lines.push('', resellerMessages.myOrders.empty());
       return lines.join('\n');
     }
 
     for (const o of orders) {
       const title = this.escapeHtml((o.productTitle || 'Product').slice(0, 60));
-      const status = this.formatResellerOrderStatus(o.status);
+      const status = resellerMessages.myOrders.status(o.status);
       const price = this.formatOrderPrice(o);
       const date = this.escapeHtml(formatGmtPlus3(o.createdAt));
       const variant = this.formatOrderVariant(o);
       const link = this.formatOrderLink(o);
       lines.push('');
       lines.push(`<b>#${o.id}</b>`);
-      lines.push(`Stage: ${status}`);
-      lines.push(`Product: ${title}`);
-      if (variant) lines.push(`Variant: ${this.escapeHtml(variant)}`);
-      lines.push(`Price: ${price}`);
-      lines.push(`Placed: ${date}`);
-      if (link) lines.push(`Link: ${link}`);
+      lines.push(
+        `${resellerMessages.myOrders.stageLabel()}: ${status}`,
+      );
+      lines.push(
+        `${resellerMessages.myOrders.productLabel()}: ${title}`,
+      );
+      if (variant) {
+        lines.push(
+          `${resellerMessages.myOrders.variantLabel()}: ${this.escapeHtml(variant)}`,
+        );
+      }
+      lines.push(`${resellerMessages.myOrders.priceLabel()}: ${price}`);
+      lines.push(`${resellerMessages.myOrders.placedLabel()}: ${date}`);
+      if (link) lines.push(`${resellerMessages.myOrders.linkLabel()}: ${link}`);
     }
 
-    lines.push('', '<i>Send a SHEIN link to place a new order.</i>');
+    lines.push('', resellerMessages.myOrders.footer());
     return lines.join('\n');
   }
 
@@ -3561,22 +3525,7 @@ export class BotUpdate {
   }
 
   private formatResellerOrderStatus(status: Order['status']): string {
-    switch (status) {
-      case 'awaiting_approval':
-        return '⏳ Awaiting Medaf collation approval';
-      case 'awaiting_payment':
-        return '💳 Awaiting your payment';
-      case 'pending':
-        return '📦 Confirmed — in progress';
-      case 'shipping':
-        return '🚚 Shipping — on the way';
-      case 'completed':
-        return '✓ Completed';
-      case 'cancelled':
-        return '✗ Cancelled';
-      default:
-        return status;
-    }
+    return resellerMessages.myOrders.status(status);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -3789,14 +3738,21 @@ export class BotUpdate {
   private formatProductLinkHtml(link: string): string {
     const url = this.toValidHttpUrl(link);
     if (!url) return this.escapeHtml(link.slice(0, 120));
-    return `<a href="${this.escapeHtml(url)}">View product</a>`;
+    const label = resellerMessages.myOrders.viewProduct().split('\n\n').join(' · ');
+    return `<a href="${this.escapeHtml(url)}">${this.escapeHtml(label)}</a>`;
   }
 
   /** Plain-text Telegram callbacks drop HTML links; restore a clickable product line. */
   private injectProductLinkHtml(text: string, link: string): string {
+    const linkLabel = resellerMessages.myOrders.viewProduct().split('\n\n')[0];
     const lines = text.split('\n').filter((line) => {
       const trimmed = line.trim();
-      return trimmed !== 'View product' && !/^Link:\s*View product\s*$/.test(trimmed);
+      return (
+        trimmed !== 'View product' &&
+        trimmed !== linkLabel &&
+        !/^Link:\s*View product\s*$/.test(trimmed) &&
+        !trimmed.includes('View product')
+      );
     });
     lines.push(this.formatProductLinkHtml(link));
     return lines.join('\n').replace(/\n+$/, '');
@@ -3806,7 +3762,7 @@ export class BotUpdate {
     const url = this.toValidHttpUrl(link);
     if (!url) return undefined;
     return Markup.inlineKeyboard([
-      [Markup.button.url('🔗 View product', url)],
+      [Markup.button.url(resellerButtons.viewProduct, url)],
     ]);
   }
 
@@ -4664,22 +4620,45 @@ export class BotUpdate {
       : 'N/A';
     const lines: string[] = [
       '🛍️ <b>' + this.escapeHtml(draft.productTitle) + '</b>',
-      `Category: <b>${categoryDisplay}</b>`,
+      bilingualLabel(
+        resellerMessages.orderDraft.categoryLabel,
+        resellerMessages.orderDraft.categoryLabelAm,
+        categoryDisplay,
+      ),
       '',
     ];
 
     if (draft.preferencesText) {
-      lines.push(`Preferences: <b>${this.escapeHtml(draft.preferencesText)}</b>`);
+      lines.push(
+        bilingualLabel(
+          resellerMessages.orderDraft.preferencesLabel,
+          resellerMessages.orderDraft.preferencesLabelAm,
+          this.escapeHtml(draft.preferencesText),
+        ),
+      );
     }
     if (draft.step === 'qty' || draft.step === 'price' || draft.step === 'confirm') {
-      lines.push(`Quantity: <b>${draft.quantity}</b>`);
+      lines.push(
+        bilingualLabel(
+          resellerMessages.orderDraft.quantityLabel,
+          resellerMessages.orderDraft.quantityLabelAm,
+          String(draft.quantity),
+        ),
+      );
     } else if (draft.step === 'qty-input') {
-      lines.push('Quantity: <i>pending</i>');
+      lines.push(
+        `${resellerMessages.orderDraft.quantityLabel}: <i>${resellerMessages.orderDraft.quantityPending}</i>`,
+        `${resellerMessages.orderDraft.quantityLabelAm}: <i>${resellerMessages.orderDraft.quantityPendingAm}</i>`,
+      );
     }
 
     if (draft.step === 'confirm') {
       lines.push('');
-      lines.push(`<b>Estimated Cost: ${draft.totalEtb.toLocaleString('en-US')} ETB</b>`);
+      lines.push(
+        resellerMessages.orderDraft.estimatedCost(
+          draft.totalEtb.toLocaleString('en-US'),
+        ),
+      );
     }
 
     lines.push('');
@@ -4690,71 +4669,51 @@ export class BotUpdate {
   private draftStepHint(draft: OrderDraft): string {
     switch (draft.step) {
       case 'preferences':
-        return 'Reply with your preferences (size, color, etc.) — e.g. Size M, Black.';
+        return resellerMessages.orderDraft.hintPreferences();
       case 'qty':
-        return 'Choose a quantity, or tap "➕ More" to enter your own.';
+        return resellerMessages.orderDraft.hintQty();
       case 'qty-input':
-        return 'Reply with a quantity (1–100), or tap "← Back" / "✗ Cancel".';
+        return resellerMessages.orderDraft.hintQtyInput();
       case 'price':
-        return this.buildAedPriceStepInstructions();
+        return resellerMessages.orderDraft.priceInstructions();
       case 'confirm':
-        return 'Review the summary, then confirm or cancel.';
+        return resellerMessages.orderDraft.hintConfirm();
     }
   }
 
   private buildAedPriceStepInstructions(opts?: { compact?: boolean }): string {
-    if (opts?.compact) {
-      return [
-        '1) SHEIN Location → UAE',
-        '2) Send AED (Dirham) price',
-        '3) Tap Place order',
-        '',
-        '1) Location → UAE',
-        '2) AED (ድርሃም) ዋጋ ይላኩ',
-        '3) Order ይጫኑ',
-      ].join('\n');
-    }
-
-    return [
-      '1. Set your SHEIN app Location to United Arab Emirates (UAE).',
-      '2. Send the AED (Dirham) price you see on the app.',
-      '3. After you review the price, tap the Place order button.',
-      '',
-      '1. በSHEIN አፕሊኬሽን Location ወደ United Arab Emirates (UAE) ይቀይሩ።',
-      '2. በአፑ ላይ የሚያዩትን AED (ድርሃም) ዋጋ ይላኩ ።',
-      '3. ዋጋውን ከተመለከቱ በኋላ (Order) ሚለውን ቁልፍ ይጫኑ።',
-    ].join('\n');
+    return resellerMessages.orderDraft.priceInstructions(opts?.compact);
   }
 
   private buildDraftKeyboard(draft: OrderDraft) {
     if (draft.step === 'preferences') {
       return Markup.inlineKeyboard([
-        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+        [Markup.button.callback(resellerButtons.cancel, 'ord:cancel')],
       ]);
     }
     if (draft.step === 'qty') {
       const choices = [1, 2, 3, 4, 5];
       return Markup.inlineKeyboard([
         choices.map((n) => Markup.button.callback(String(n), `ord:qty:${n}`)),
-        [Markup.button.callback('➕ More', 'ord:qty:more')],
-        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+        [Markup.button.callback(resellerButtons.more, 'ord:qty:more')],
+        [Markup.button.callback(resellerButtons.cancel, 'ord:cancel')],
       ]);
     }
     if (draft.step === 'qty-input') {
       return Markup.inlineKeyboard([
-        [Markup.button.callback('← Back', 'ord:qty:back')],
-        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+        [Markup.button.callback(resellerButtons.back, 'ord:qty:back')],
+        [Markup.button.callback(resellerButtons.cancel, 'ord:cancel')],
       ]);
     }
     if (draft.step === 'price') {
       return Markup.inlineKeyboard([
-        [Markup.button.callback('✗ Cancel', 'ord:cancel')],
+        [Markup.button.callback(resellerButtons.cancel, 'ord:cancel')],
       ]);
     }
     return Markup.inlineKeyboard([
       [
-        Markup.button.callback('✓ Place order', 'ord:confirm'),
-        Markup.button.callback('✗ Cancel', 'ord:cancel'),
+        Markup.button.callback(resellerButtons.placeOrder, 'ord:confirm'),
+        Markup.button.callback(resellerButtons.cancel, 'ord:cancel'),
       ],
     ]);
   }
