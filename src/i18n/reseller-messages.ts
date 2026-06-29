@@ -109,7 +109,7 @@ export const resellerMessages = {
     estimatedCost: (etb: string) =>
       bilingualHtml(
         `<b>Estimated Cost: ${etb} ETB</b>`,
-        `<b>ግምታዊ ዋጋ፡ ${etb} ብር</b>`,
+        `<b>ዋጋ፡ ${etb} ብር</b>`,
       ),
     hintPreferences: () =>
       bilingual(
