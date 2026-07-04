@@ -1194,7 +1194,10 @@ export class BotUpdate {
         '✅ <b>Approved</b> — payment request sent to reseller.',
       );
       if (!feedUpdated) {
-        await this.showApprovalQueue(ctx, 'edit', 0);
+        await this.refreshAdminOrderListView(ctx, {
+          previousStatus: 'awaiting_approval',
+          resellerId: order.resellerId,
+        });
       }
     } catch (err) {
       this.fileLogger.logError('adminApprove', err, { orderId });
@@ -1301,7 +1304,11 @@ export class BotUpdate {
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      await this.showAdminOrdersByStatus(ctx, 'awaiting_payment', 'edit', page);
+      await this.refreshAdminOrderListView(ctx, {
+        previousStatus: 'awaiting_payment',
+        resellerId: order.resellerId,
+        page,
+      });
     } catch (err) {
       this.fileLogger.logError('adminMarkPaid', err, { orderId });
       await this.safeAnswer(ctx, 'Could not mark order paid. Please try again.', true);
@@ -1340,7 +1347,11 @@ export class BotUpdate {
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      await this.showAdminOrdersByStatus(ctx, 'pending', 'edit', page);
+      await this.refreshAdminOrderListView(ctx, {
+        previousStatus: 'pending',
+        resellerId: order.resellerId,
+        page,
+      });
     } catch (err) {
       this.fileLogger.logError('adminMarkShipping', err, { orderId });
       await this.safeAnswer(ctx, 'Could not mark order shipping. Please try again.', true);
@@ -1384,12 +1395,11 @@ export class BotUpdate {
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      await this.showAdminOrdersByStatus(
-        ctx,
-        previousStatus === 'shipping' ? 'shipping' : 'pending',
-        'edit',
+      await this.refreshAdminOrderListView(ctx, {
+        previousStatus: previousStatus === 'shipping' ? 'shipping' : 'pending',
+        resellerId: order.resellerId,
         page,
-      );
+      });
     } catch (err) {
       this.fileLogger.logError('adminMarkDone', err, { orderId });
       await this.safeAnswer(ctx, 'Could not mark order done. Please try again.', true);
@@ -1444,11 +1454,11 @@ export class BotUpdate {
 
       const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
       const page = this.parseAdminOrdersPageFromText(cbMessage?.text);
-      if (this.isApprovalQueueMessage(cbMessage?.text)) {
-        await this.showApprovalQueue(ctx, 'edit', page);
-      } else {
-        await this.showAdminOrdersByStatus(ctx, previousStatus, 'edit', page);
-      }
+      await this.refreshAdminOrderListView(ctx, {
+        previousStatus,
+        resellerId: order.resellerId,
+        page,
+      });
     } catch (err) {
       this.fileLogger.logError('adminCancelOrder', err, { orderId });
       await this.safeAnswer(ctx, 'Could not cancel order. Please try again.', true);
@@ -2924,7 +2934,7 @@ export class BotUpdate {
     );
     const payload = {
       parse_mode: 'HTML' as const,
-      ...this.adminResellerOrdersKeyboard(resellerId, safePage, totalPages),
+      ...this.adminResellerOrdersKeyboard(orders, resellerId, safePage, totalPages),
     };
     try {
       if (mode === 'edit') {
@@ -3038,15 +3048,74 @@ export class BotUpdate {
       this.appendAdminOrderDetailLines(lines, o, baseIndex + idx, true);
     });
 
+    const hasActionable = orders.some((o) => this.adminOrderHasActionButtons(o.status));
+    if (hasActionable) {
+      lines.push('', '<i>Use the buttons below to update order status.</i>');
+    }
+
     return lines.join('\n');
   }
 
+  private adminOrderHasActionButtons(status: Order['status']): boolean {
+    return (
+      status === 'awaiting_approval' ||
+      status === 'awaiting_payment' ||
+      status === 'pending' ||
+      status === 'shipping'
+    );
+  }
+
+  private appendAdminOrderActionRows(
+    rows: InlineKeyboardButton[][],
+    order: Order,
+    opts?: { includeUrlButtons?: boolean },
+  ): void {
+    const includeUrlButtons = opts?.includeUrlButtons ?? true;
+    const o = order;
+
+    if (o.status === 'awaiting_approval') {
+      rows.push([
+        Markup.button.callback(`✓ Approve #${o.id}`, `admin:approve:${o.id}`),
+        Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
+        Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
+      ]);
+      rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
+    } else if (o.status === 'pending') {
+      rows.push([
+        Markup.button.callback(`🚚 Mark shipping #${o.id}`, `admin:ship:${o.id}`),
+        Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
+      ]);
+    } else if (o.status === 'shipping') {
+      rows.push([
+        Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
+        Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
+      ]);
+    } else if (o.status === 'awaiting_payment') {
+      rows.push([
+        Markup.button.callback(`✅ Paid #${o.id}`, `admin:paid:${o.id}`),
+        Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
+      ]);
+      if (includeUrlButtons) {
+        const url = this.toValidHttpUrl(o.link);
+        if (url) {
+          rows.push([Markup.button.url(`🔗 View product #${o.id}`, url)]);
+        }
+      }
+    }
+  }
+
   private adminResellerOrdersKeyboard(
+    orders: Order[],
     resellerId: number,
     page: number,
     totalPages: number,
   ) {
     const rows: InlineKeyboardButton[][] = [];
+
+    for (const o of orders) {
+      this.appendAdminOrderActionRows(rows, o);
+    }
+
     const nav = this.buildPaginationButtons(
       (p) =>
         p <= 0
@@ -3216,41 +3285,14 @@ export class BotUpdate {
     const includeUrlButtons = opts?.includeUrlButtons ?? true;
     const rows: InlineKeyboardButton[][] = [];
 
-    if (status === 'awaiting_approval') {
+    if (
+      status === 'awaiting_approval' ||
+      status === 'pending' ||
+      status === 'shipping' ||
+      status === 'awaiting_payment'
+    ) {
       for (const o of orders) {
-        rows.push([
-          Markup.button.callback(`✓ Approve #${o.id}`, `admin:approve:${o.id}`),
-          Markup.button.callback(`✏️ Price #${o.id}`, `admin:adjust:${o.id}`),
-          Markup.button.callback(`✗ Reject #${o.id}`, `admin:reject:${o.id}`),
-        ]);
-        rows.push([Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`)]);
-      }
-    } else if (status === 'pending') {
-      for (const o of orders) {
-        rows.push([
-          Markup.button.callback(`🚚 Mark shipping #${o.id}`, `admin:ship:${o.id}`),
-          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
-        ]);
-      }
-    } else if (status === 'shipping') {
-      for (const o of orders) {
-        rows.push([
-          Markup.button.callback(`✓ Confirm delivery #${o.id}`, `admin:done:${o.id}`),
-          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
-        ]);
-      }
-    } else if (status === 'awaiting_payment') {
-      for (const o of orders) {
-        rows.push([
-          Markup.button.callback(`✅ Paid #${o.id}`, `admin:paid:${o.id}`),
-          Markup.button.callback(`✗ Cancel #${o.id}`, `admin:cancel:${o.id}`),
-        ]);
-        if (includeUrlButtons) {
-          const url = this.toValidHttpUrl(o.link);
-          if (url) {
-            rows.push([Markup.button.url(`🔗 View product #${o.id}`, url)]);
-          }
-        }
+        this.appendAdminOrderActionRows(rows, o, { includeUrlButtons });
       }
     }
 
@@ -3304,6 +3346,38 @@ export class BotUpdate {
 
   private isApprovalQueueMessage(text: string | undefined): boolean {
     return !!text?.includes('✅ Awaiting approval') || !!text?.includes('Awaiting approval</b>');
+  }
+
+  private isAdminResellerOrdersMessage(text: string | undefined): boolean {
+    return !!text?.includes('order(s) total');
+  }
+
+  private async refreshAdminOrderListView(
+    ctx: Context,
+    opts: {
+      previousStatus?: Order['status'];
+      resellerId?: number;
+      page?: number;
+    },
+  ): Promise<void> {
+    const cbMessage = ctx.callbackQuery?.message as { text?: string } | undefined;
+    const text = cbMessage?.text;
+    const page =
+      opts.page ?? this.parseAdminOrdersPageFromText(text);
+
+    if (this.isApprovalQueueMessage(text)) {
+      await this.showApprovalQueue(ctx, 'edit', page);
+      return;
+    }
+    if (this.isAdminResellerOrdersMessage(text) && opts.resellerId) {
+      await this.showAdminResellerOrders(ctx, opts.resellerId, 'edit', page);
+      return;
+    }
+    if (opts.previousStatus) {
+      await this.showAdminOrdersByStatus(ctx, opts.previousStatus, 'edit', page);
+      return;
+    }
+    await this.showApprovalQueue(ctx, 'edit', page);
   }
 
   private buildPaginationButtons(
@@ -3853,9 +3927,9 @@ export class BotUpdate {
       '',
       '<b>Pricing</b> (tap a button to edit)',
       '• Profit margin (dynamic; tier picked from Dubai product cost ETB only; delivery added after):',
-      '   – &lt; 3,000 ETB → <b>30%</b>',
-      '   – 3,000–10,000 ETB → <b>20%</b>',
-      '   – &gt; 10,000 ETB → <b>15%</b>',
+      '   – &lt; 5,000 ETB → <b>35%</b>',
+      '   – 5,000–15,000 ETB → <b>25%</b>',
+      '   – &gt; 15,000 ETB → <b>20%</b>',
       '• All ETB amounts are rounded to the nearest whole birr at each step.',
       `• Default delivery fallback: <b>${delivery.toLocaleString('en-US')} ETB</b>`,
       '• Category delivery: shipping fee + commission, used when a category matches',

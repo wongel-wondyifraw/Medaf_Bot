@@ -1,18 +1,18 @@
 /**
  * Dynamic profit margin tiers from per-unit Dubai cost in ETB (delivery excluded).
- *   • cost < 5,000 ETB          → 30%
- *   • 5,000 ≤ cost ≤ 15,000    → 20%
- *   • cost > 15,000 ETB         → 15%
+ *   • cost < 5,000 ETB          → 35%
+ *   • 5,000 ≤ cost ≤ 15,000    → 25%
+ *   • cost > 15,000 ETB         → 20%
  *
  * Thresholds raised from 3,000/10,000 so that core mid-priced orders keep the
- * 30% tier instead of silently dropping to 20% (especially at higher FX rates).
+ * top tier instead of silently dropping one step (especially at higher FX rates).
  */
 export function resolveDynamicMarginPercent(dubaiCostEtb: number): number {
   const cost = roundEtb(dubaiCostEtb);
-  if (!Number.isFinite(cost) || cost <= 0) return 30;
-  if (cost < 5000) return 30;
-  if (cost <= 15000) return 20;
-  return 15;
+  if (!Number.isFinite(cost) || cost <= 0) return 35;
+  if (cost < 5000) return 35;
+  if (cost <= 15000) return 25;
+  return 20;
 }
 
 /** Round to the nearest whole ETB (all customer-facing amounts are integers). */
