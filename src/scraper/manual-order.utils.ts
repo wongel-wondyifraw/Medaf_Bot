@@ -1,9 +1,12 @@
 /**
  * Helpers used when the bot decides to build an order from a SHEIN link
- * manually (no scraping). Used for mobile (m.shein.com) URLs and SHEIN
- * "share" links (api-shein.shein.com/sharejump, shein.top, …) where the
- * scraping providers are unreliable or have no product reference at all.
+ * manually (no scraping). Used for mobile (m.shein.com) URLs, SHEIN one-link
+ * URLs (onelink.shein.com), and legacy share links (api-shein.shein.com/sharejump,
+ * shein.top, …) where scraping providers are unreliable.
  */
+
+import type { SharePreviewResult } from './share-preview.service';
+import { matchSheinLinkType } from './shein-link-types';
 
 export const DEFAULT_CLOTHING_SIZES = ['S', 'M', 'L', 'XL', 'XXL'];
 
@@ -63,6 +66,82 @@ export function extractFreeText(input: string): string {
   // Trim trailing punctuation/separators left after stripping
   cleaned = cleaned.replace(/^[\s\-:|,.]+|[\s\-:|,.]+$/g, '');
   return cleaned;
+}
+
+/**
+ * For SHEIN product URLs (m./us./etc) the slug before -p-ID.html is a
+ * human-readable name like "Tween-Girls-Letter-Print-...". Convert it to
+ * title-case "Tween Girls Letter Print …".
+ */
+export function extractProductIdFromUrl(url: string): string | null {
+  try {
+    return url.match(/-p-(\d+)\.html/i)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolvedManualProduct {
+  productTitle: string;
+  productId: string | null;
+  orderLink: string;
+  imageUrl: string | null;
+  slugTitle: string | null;
+}
+
+/** Prefer normalized product-page URL when redirects resolve to one. */
+export function pickOrderLinkFromResolution(
+  inputUrl: string,
+  canonicalUrl: string | null,
+): string {
+  const candidates = [canonicalUrl, inputUrl].filter(
+    (u): u is string => typeof u === 'string' && u.length > 0,
+  );
+  for (const candidate of candidates) {
+    const match = matchSheinLinkType(candidate);
+    if (match?.typeId === 'product-page') return match.url;
+  }
+  return canonicalUrl ?? inputUrl;
+}
+
+/**
+ * Builds product title, id, and stored link from HTTP share preview (redirects +
+ * og tags) — not from pasted message text.
+ */
+export function resolveManualProductFromLink(
+  inputUrl: string,
+  classifiedProductId: string | null,
+  preview: SharePreviewResult | null,
+): ResolvedManualProduct | null {
+  if (!preview) return null;
+
+  const canonicalUrl = preview.canonicalUrl || inputUrl;
+  const orderLink = pickOrderLinkFromResolution(inputUrl, canonicalUrl);
+  const slugTitle =
+    extractSlugTitle(canonicalUrl) ??
+    extractSlugTitle(orderLink) ??
+    extractSlugTitle(inputUrl);
+  const productId =
+    classifiedProductId ??
+    preview.productId ??
+    extractProductIdFromUrl(canonicalUrl) ??
+    extractProductIdFromUrl(orderLink) ??
+    extractProductIdFromUrl(inputUrl);
+
+  const productTitle =
+    (preview.title && preview.title.length >= 4 ? preview.title : null) ??
+    slugTitle ??
+    (productId ? `SHEIN product ${productId}` : null);
+
+  if (!productTitle) return null;
+
+  return {
+    productTitle,
+    productId,
+    orderLink,
+    imageUrl: preview.image,
+    slugTitle,
+  };
 }
 
 /**

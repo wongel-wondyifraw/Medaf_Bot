@@ -35,8 +35,7 @@ import { Reseller } from '../resellers/reseller.entity';
 import { LinkResolverService } from '../scraper/link-resolver.service';
 import { SharePreviewService } from '../scraper/share-preview.service';
 import {
-  extractFreeText,
-  extractSlugTitle,
+  resolveManualProductFromLink,
 } from '../scraper/manual-order.utils';
 import { ObservationsService } from '../observations/observations.service';
 import { ScraperService } from '../scraper/scraper.service';
@@ -420,39 +419,41 @@ export class BotUpdate {
 
   /**
    * Starts an order draft for any valid SHEIN link without calling paid
-   * scraping providers. Titles come from pasted text, the URL slug, or a
-   * single plain HTTP fetch of share-link HTML (same source as Telegram previews).
+   * scraping providers. Title, image, product id, and stored link come from
+   * resolving the URL (redirects + page metadata), not pasted message text.
    */
   private async startManualOrder(
     ctx: Context,
     userId: number,
-    rawMessage: string,
+    _rawMessage: string,
     url: string,
     productId: string | null,
   ): Promise<void> {
     await ctx.reply(resellerMessages.links.preparing());
 
-    const freeText = extractFreeText(rawMessage);
-    const slugTitle = extractSlugTitle(url);
-
     const fetched = await this.sharePreview.tryFetch(url);
     await this.simulateScrapeDelay();
 
-    const resolvedProductId = productId ?? fetched?.productId ?? null;
-    const productTitle =
-      (freeText && freeText.length >= 4 ? freeText : null) ??
-      fetched?.title ??
-      slugTitle ??
-      (resolvedProductId ? `SHEIN product ${resolvedProductId}` : 'SHEIN product');
+    const resolved = resolveManualProductFromLink(url, productId, fetched);
+    if (!resolved) {
+      await ctx.reply(resellerMessages.links.resolveFailed());
+      return;
+    }
+
+    const {
+      productTitle,
+      productId: resolvedProductId,
+      orderLink,
+      imageUrl,
+      slugTitle,
+    } = resolved;
 
     const linkContext = buildCategoryLinkContext({
       title: productTitle,
-      url,
-      rawMessage,
+      url: orderLink,
       productId: resolvedProductId,
-      imageUrl: fetched?.image ?? null,
+      imageUrl,
       slugTitle,
-      freeText,
     });
     const categoryOutcome = await this.categories.resolveCategoryForProduct(linkContext);
     const category = categoryOutcome.category;
@@ -476,9 +477,9 @@ export class BotUpdate {
       onSale: false,
       currency: 'USD',
       inStock: true,
-      image: fetched?.image ?? null,
+      image: imageUrl,
       productId: resolvedProductId,
-      domain: this.safeHostname(url),
+      domain: this.safeHostname(orderLink),
       source: 'manual',
       sizes: [],
       colors: [],
@@ -491,7 +492,7 @@ export class BotUpdate {
     // price on the price step — the calculator will recompute them then.
     const draft = this.orderDraft.setDraft(userId, {
       productId: resolvedProductId,
-      link: url,
+      link: orderLink,
       productTitle,
       sizes: [],
       colors: [],

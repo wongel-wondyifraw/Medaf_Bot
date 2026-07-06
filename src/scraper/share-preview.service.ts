@@ -2,13 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
 export interface SharePreviewResult {
-  title: string;
+  title: string | null;
   image: string | null;
   productId: string | null;
+  /** Final URL after HTTP redirects (e.g. onelink → product page). */
+  canonicalUrl: string;
 }
 
 const MAX_BODY_BYTES = 512 * 1024;
-const FETCH_TIMEOUT_MS = 6000;
+const FETCH_TIMEOUT_MS = 8000;
+const MAX_REDIRECTS = 10;
 
 @Injectable()
 export class SharePreviewService {
@@ -28,7 +31,7 @@ export class SharePreviewService {
     try {
       const res = await axios.get<string>(url, {
         timeout: FETCH_TIMEOUT_MS,
-        maxRedirects: 5,
+        maxRedirects: MAX_REDIRECTS,
         maxContentLength: MAX_BODY_BYTES,
         responseType: 'text',
         validateStatus: () => true,
@@ -58,20 +61,31 @@ export class SharePreviewService {
         return null;
       }
 
+      const canonicalUrl = this.extractCanonicalUrl(res, url);
       const title = this.extractTitle(html);
-      if (!title || title.length < 4) {
-        this.logger.warn(`Share preview no title parsed for ${url}`);
-        return null;
+      const image = this.extractOgImage(html);
+      const productId =
+        this.extractProductId(html) ?? this.extractProductIdFromUrl(canonicalUrl);
+
+      if (!title && !productId && !this.extractProductIdFromUrl(canonicalUrl)) {
+        const slugLike = /-p-\d+\.html/i.test(canonicalUrl);
+        if (!slugLike) {
+          this.logger.warn(`Share preview no title or product id for ${url}`);
+          return null;
+        }
       }
 
-      const image = this.extractOgImage(html);
-      const productId = this.extractProductId(html);
+      if (title) {
+        this.logger.log(
+          `Share preview ok title="${title.slice(0, 60)}" productId=${productId ?? 'n/a'} canonical=${canonicalUrl}`,
+        );
+      } else {
+        this.logger.log(
+          `Share preview partial canonical=${canonicalUrl} productId=${productId ?? 'n/a'}`,
+        );
+      }
 
-      this.logger.log(
-        `Share preview ok title="${title.slice(0, 60)}" productId=${productId ?? 'n/a'}`,
-      );
-
-      return { title, image, productId };
+      return { title, image, productId, canonicalUrl };
     } catch (err) {
       const e = err as Error;
       this.logger.warn(`Share preview failed for ${url}: ${e.message}`);
@@ -139,6 +153,25 @@ export class SharePreviewService {
   private extractProductId(html: string): string | null {
     const m = html.match(/-p-(\d+)\.html/i);
     return m ? m[1] : null;
+  }
+
+  private extractProductIdFromUrl(url: string): string | null {
+    try {
+      return url.match(/-p-(\d+)\.html/i)?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractCanonicalUrl(
+    res: { request?: { res?: { responseUrl?: string }; responseURL?: string } },
+    requestUrl: string,
+  ): string {
+    const final =
+      res.request?.res?.responseUrl ??
+      res.request?.responseURL ??
+      requestUrl;
+    return typeof final === 'string' && final.startsWith('http') ? final : requestUrl;
   }
 
   private decodeHtmlEntities(text: string): string {

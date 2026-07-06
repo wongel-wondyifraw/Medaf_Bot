@@ -1,13 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { linkInvalidReasons } from '../i18n/reseller-messages';
+import {
+  extractSheinUrlFromText,
+  isKnownShareStyleLink,
+  isSheinHostname,
+  matchSheinLinkType,
+} from './shein-link-types';
 
 /**
  * Result of classifying a user-supplied SHEIN message. Currently every
- * valid SHEIN link (desktop, mobile, or share) is routed through the
- * manual order flow — the scraping providers remain in the codebase but
- * are intentionally not invoked. 'scrape' is preserved on the type union
- * so the scraping path can be re-enabled in the future without a wider
- * refactor.
+ * valid SHEIN link (desktop, mobile, share, one-link, …) is routed through
+ * the manual order flow — the scraping providers remain in the codebase but
+ * are intentionally not invoked.
  */
 export type LinkClassification =
   | { kind: 'scrape'; url: string }
@@ -19,80 +23,23 @@ export class LinkResolverService {
   private readonly logger = new Logger(LinkResolverService.name);
 
   isProductUrl(url: string): boolean {
-    try {
-      const u = new URL(url);
-      return /shein/i.test(u.hostname) && /-p-\d+\.html$/i.test(u.pathname);
-    } catch {
-      return false;
-    }
-  }
-
-  private normalizeProductUrl(url: string): string {
-    const u = new URL(url);
-
-    // Drop the tracking/share query (src_identifier, detailBusinessFrom, …).
-    // Those params come from the SHEIN app/share sheet and make the page
-    // slower to render on ScraperAPI. We intentionally do NOT rewrite the
-    // hostname: rewriting m.shein.com to us.shein.com produces a slug that
-    // may not exist on the US storefront, which causes SHEIN to serve a
-    // redirect/soft-404 and ScraperAPI to burn its full 90s render budget.
-    // The ScraperAPI provider already maps m.shein.com to country=us, so the
-    // mobile host scrapes correctly as-is.
-    u.search = '';
-    u.hash = '';
-    return u.toString();
-  }
-
-  private isSheinHost(url: string): boolean {
-    try {
-      const u = new URL(url);
-      return /(^|\.)shein\.com$/i.test(u.hostname) || /(^|\.)shein\.top$/i.test(u.hostname);
-    } catch {
-      return false;
-    }
-  }
-
-  private isShareLink(url: string): boolean {
-    try {
-      const u = new URL(url);
-      const host = u.hostname.toLowerCase();
-      const path = u.pathname.toLowerCase();
-      if (host === 'api-shein.shein.com') return true;
-      if (/(^|\.)shein\.top$/i.test(host)) return true;
-      if (/sharejump|appjump|\/share\//i.test(path)) return true;
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  private extractUrl(input: string): string | null {
-    const matches = input.match(/https?:\/\/[^\s<>"'`]+/gi);
-    if (!matches) return null;
-    const productHit = matches.find((m) => this.isProductUrl(m));
-    if (productHit) return productHit;
-    const sheinHit = matches.find((m) => this.isSheinHost(m));
-    if (sheinHit) return sheinHit;
-    return matches[0];
+    const match = matchSheinLinkType(url);
+    return match?.typeId === 'product-page';
   }
 
   resolve(input: string): string {
-    const url = this.extractUrl(input);
+    const url = extractSheinUrlFromText(input);
     if (!url) {
       throw new Error('No URL found in your message. Please send a SHEIN product link.');
     }
 
-    if (this.isProductUrl(url)) {
-      const normalized = this.normalizeProductUrl(url);
-      this.logger.log(
-        normalized === url
-          ? `Got product URL: ${url}`
-          : `Normalized product URL: ${url} -> ${normalized}`,
-      );
-      return normalized;
+    const match = matchSheinLinkType(url);
+    if (match?.typeId === 'product-page') {
+      this.logger.log(`Got product URL: ${match.url}`);
+      return match.url;
     }
 
-    if (this.isShareLink(url)) {
+    if (match && isKnownShareStyleLink(url)) {
       throw new Error(
         [
           "That's a SHEIN app share link, which can't be priced directly.",
@@ -105,14 +52,23 @@ export class LinkResolverService {
           '',
           'Example of a working URL:',
           'https://us.shein.com/Some-Product-Name-p-12345678.html',
+          '',
+          'You can also send the share message as-is — the bot will use the product title from your message.',
         ].join('\n'),
       );
     }
 
-    if (this.isSheinHost(url)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('That does not look like a valid URL.');
+    }
+
+    if (isSheinHostname(parsed.hostname)) {
       throw new Error(
-        'That SHEIN link is not a product page. Please send the URL of the product detail page, ' +
-          'which ends with "-p-<number>.html".',
+        'That SHEIN link is not a recognized product or share format. ' +
+          'Send a product page URL (ends with "-p-<number>.html") or a supported SHEIN share link.',
       );
     }
 
@@ -123,15 +79,9 @@ export class LinkResolverService {
    * Classify the user's input into the next bot action. Unlike resolve(),
    * this never throws — it returns a discriminated result the bot can use
    * to branch between the scraping flow and the manual flow.
-   *
-   *  - 'scrape':  full SHEIN product URL on a desktop/regional storefront.
-   *  - 'manual':  m.shein.com URL or a SHEIN share link (api-shein, shein.top,
-   *               sharejump/appjump paths) — these are unreliable to scrape,
-   *               so the bot asks the user for the USD price.
-   *  - 'invalid': not a SHEIN link or message we can act on.
    */
   classify(input: string): LinkClassification {
-    const url = this.extractUrl(input);
+    const url = extractSheinUrlFromText(input);
     if (!url) {
       return { kind: 'invalid', reason: linkInvalidReasons.noUrl() };
     }
@@ -143,33 +93,24 @@ export class LinkResolverService {
       return { kind: 'invalid', reason: linkInvalidReasons.invalidUrl() };
     }
 
-    const host = parsed.hostname.toLowerCase();
-    const isShein = /(^|\.)shein\.com$/i.test(host) || /(^|\.)shein\.top$/i.test(host);
-    if (!isShein) {
+    if (!isSheinHostname(parsed.hostname)) {
       return { kind: 'invalid', reason: linkInvalidReasons.notSheinHost() };
     }
 
-    const productId = parsed.pathname.match(/-p-(\d+)\.html$/i)?.[1] ?? null;
-    const isShare = this.isShareLink(url);
-
-    if (!isShare && !productId) {
+    const match = matchSheinLinkType(url);
+    if (!match) {
       return { kind: 'invalid', reason: linkInvalidReasons.notProductPage() };
     }
 
-    // All valid SHEIN links — desktop, mobile, share — go through the
-    // manual flow. The scraping providers are still wired in the codebase
-    // for future use, but the bot does not call them.
-    const reason = isShare
-      ? 'SHEIN share link'
-      : host === 'm.shein.com'
-        ? 'SHEIN mobile link'
-        : 'SHEIN product link';
+    this.logger.log(
+      `SHEIN link type=${match.typeId} productId=${match.productId ?? 'n/a'} url=${match.url}`,
+    );
 
     return {
       kind: 'manual',
-      url,
-      productId,
-      reason,
+      url: match.url,
+      productId: match.productId,
+      reason: match.label,
     };
   }
 }

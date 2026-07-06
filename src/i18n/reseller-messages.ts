@@ -87,13 +87,18 @@ export const resellerMessages = {
       ),
     notProductPage: () =>
       bilingual(
-        'That SHEIN link is not a product page. Send the URL of a product detail page (ends with "-p-<number>.html").',
-        'ይህ የSHEIN ሊንክ የምርት ገጽ አይደለም። የምርት ዝርዝር ገጽ ሊንክ ይላኩ (በ "-p-<ቁጥር>.html" የሚያበቃ)።',
+        'That SHEIN link is not recognized. Send a product page URL (ends with "-p-<number>.html") or a supported SHEIN app/share link.',
+        'ይህ የSHEIN ሊንክ አልታወቀም። የምርት ገጽ ሊንክ (በ "-p-<ቁጥር>.html" የሚያበቃ) ወይም የሚደገፍ የSHEIN አፕ/ሼር ሊንክ ይላኩ።',
       ),
     preparing: () =>
       bilingual(
         'Preparing product details, please wait...',
         'የምርት ዝርዝር በማዘጋጀት ላይ፣ እባክዎ ይጠብቁ...',
+      ),
+    resolveFailed: () =>
+      bilingual(
+        'Could not load product details from that link. Open it in your browser and send the product page URL (ends with "-p-<number>.html"), or try again in a moment.',
+        'ከዚያ ሊንክ የምርት ዝርዝር ማግኘት አልተቻለም። በአሳሽዎ ይክፈቱና የምርት ገጽ ሊንክ (በ "-p-<ቁጥር>.html" የሚያበቃ) ይላኩ፣ ወይም ትንሽ ቆይተው እንደገና ይሞክሩ።',
       ),
   },
 
