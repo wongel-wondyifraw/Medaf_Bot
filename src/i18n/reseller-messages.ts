@@ -510,6 +510,14 @@ export const resellerMessages = {
         ].join('\n'),
       ),
   },
+
+  blocked: {
+    notice: () =>
+      bilingual(
+        'Your access to this bot has been restricted. If you believe this is a mistake, please contact Medaf store.',
+        'ወደዚህ ቦት መዳረሻዎ ተከልክሏል። ተሳስቶ እንደሆነ ቢመስልዎት እባክዎ Medaf storeን ያግኙ።',
+      ),
+  },
 } as const;
 
 /** Invalid link reasons for link-resolver classify(). */

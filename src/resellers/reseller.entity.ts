@@ -28,6 +28,12 @@ export class Reseller {
   @Column({ type: 'timestamptz', nullable: true, name: 'registered_at' })
   registeredAt!: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true, name: 'blocked_at' })
+  blockedAt!: Date | null;
+
+  @Column({ type: 'text', nullable: true, name: 'block_reason' })
+  blockReason!: string | null;
+
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;
 
@@ -36,5 +42,9 @@ export class Reseller {
 
   isRegistered(): boolean {
     return !!(this.fullName && this.phoneNumber && this.registeredAt);
+  }
+
+  isBlocked(): boolean {
+    return this.blockedAt != null;
   }
 }

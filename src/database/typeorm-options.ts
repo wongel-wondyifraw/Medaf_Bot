@@ -33,6 +33,7 @@ import { OrderUserUnitAed1781300000000 } from '../migrations/1781300000000-Order
 import { ResetDataKeepCategories1781400000000 } from '../migrations/1781400000000-ResetDataKeepCategories';
 import { OrderProfitEtb1781500000000 } from '../migrations/1781500000000-OrderProfitEtb';
 import { PijamasCategory1781600000000 } from '../migrations/1781600000000-PijamasCategory';
+import { ResellerBlocked1781700000000 } from '../migrations/1781700000000-ResellerBlocked';
 import { TypeOrmConsoleLogger } from './typeorm-console.logger';
 
 export function buildTypeOrmOptions(opts: {
@@ -75,6 +76,7 @@ export function buildTypeOrmOptions(opts: {
       ResetDataKeepCategories1781400000000,
       OrderProfitEtb1781500000000,
       PijamasCategory1781600000000,
+      ResellerBlocked1781700000000,
     ],
     synchronize: false,
     logging: opts.logging ? ['query', 'error', 'warn', 'schema', 'migration'] : ['error', 'warn', 'migration'],

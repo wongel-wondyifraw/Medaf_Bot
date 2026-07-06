@@ -31,6 +31,7 @@ import {
   OrderDraftStateService,
 } from '../orders/order-draft-state.service';
 import { ResellersService } from '../resellers/resellers.service';
+import { Reseller } from '../resellers/reseller.entity';
 import { LinkResolverService } from '../scraper/link-resolver.service';
 import { SharePreviewService } from '../scraper/share-preview.service';
 import {
@@ -56,6 +57,7 @@ export class BotUpdate {
   private readonly myOrdersPageSize = 5;
   private readonly adminResellersPageSize = 10;
   private readonly adminResellerOrdersPageSize = 5;
+  private readonly adminBlockedPageSize = 10;
 
   private readonly adminOrderStatusCategories: Array<{
     status: Order['status'];
@@ -103,6 +105,16 @@ export class BotUpdate {
     });
   }
 
+  /** Returns true when the user is blocked and a notice was sent (admins are never blocked). */
+  private async replyIfBlocked(ctx: Context): Promise<boolean> {
+    const from = ctx.from;
+    if (!from) return false;
+    if (await this.admins.isAdmin(from.id)) return false;
+    if (!(await this.resellers.isBlocked(from.id))) return false;
+    await ctx.reply(resellerMessages.blocked.notice());
+    return true;
+  }
+
   private askForName(ctx: Context) {
     return ctx.reply(resellerMessages.registration.welcomeAskName(), Markup.removeKeyboard());
   }
@@ -118,6 +130,7 @@ export class BotUpdate {
 
   @Start()
   async onStart(@Ctx() ctx: Context) {
+    if (await this.replyIfBlocked(ctx)) return;
     await this.handleUserStart(ctx, false);
   }
 
@@ -143,11 +156,13 @@ export class BotUpdate {
 
   @Command('myorders')
   async onMyOrders(@Ctx() ctx: Context) {
+    if (await this.replyIfBlocked(ctx)) return;
     await this.replyMyOrders(ctx);
   }
 
   @Action(/^user:myorders(?::(\d+))?$/)
   async onMyOrdersButton(@Ctx() ctx: Context) {
+    if (await this.replyIfBlocked(ctx)) return;
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const page = parseInt(match?.[1] || '0', 10) || 0;
     const isPagination = !!match?.[1];
@@ -280,6 +295,7 @@ export class BotUpdate {
     const from = ctx.from;
     const message = ctx.message as { contact?: { phone_number?: string; user_id?: number } } | undefined;
     if (!from || !message?.contact) return;
+    if (await this.replyIfBlocked(ctx)) return;
 
     if (message.contact.user_id && message.contact.user_id !== from.id) {
       await ctx.reply(resellerMessages.registration.wrongContact());
@@ -308,11 +324,13 @@ export class BotUpdate {
     const text = message.text.trim();
 
     if (text === this.myOrdersButtonLabel) {
+      if (await this.replyIfBlocked(ctx)) return;
       await this.replyMyOrders(ctx);
       return;
     }
 
     if (text === this.updateButtonLabel) {
+      if (await this.replyIfBlocked(ctx)) return;
       await this.handleUserStart(ctx, true);
       return;
     }
@@ -341,9 +359,9 @@ export class BotUpdate {
       return;
     }
 
-    // Order-draft text routing. Each step that expects free-form text from
-    // the user (custom quantity, unit AED price) is dispatched here before
-    // any of the registration / SHEIN-link checks below.
+    if (await this.replyIfBlocked(ctx)) return;
+
+    // Order-draft text routing.
     const activeDraft = this.orderDraft.getDraft(from.id);
     if (activeDraft && activeDraft.step === 'preferences') {
       await this.handleOrderPreferencesInput(ctx, from.id, text);
@@ -562,6 +580,10 @@ export class BotUpdate {
   async onOrderPickQuantity(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
       await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
@@ -583,6 +605,10 @@ export class BotUpdate {
   async onOrderQuantityMore(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
       await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
@@ -605,6 +631,10 @@ export class BotUpdate {
   async onOrderQuantityBack(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
       await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
@@ -624,6 +654,10 @@ export class BotUpdate {
   async onOrderPriceKeep(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
       await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
@@ -644,6 +678,10 @@ export class BotUpdate {
   async onOrderCancel(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     this.orderDraft.clearDraft(from.id);
     await this.safeAnswer(ctx, resellerMessages.orderDraft.cancelled(), false);
     try {
@@ -658,6 +696,10 @@ export class BotUpdate {
   async onOrderConfirm(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
     const draft = this.orderDraft.getDraft(from.id);
     if (!draft) {
       await this.safeAnswer(ctx, resellerMessages.orderDraft.sessionExpired(), true);
@@ -736,6 +778,10 @@ export class BotUpdate {
   async onCancel(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
 
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const orderId = parseInt(match?.[1] || '0', 10);
@@ -799,6 +845,10 @@ export class BotUpdate {
   async onPaymentConfirm(@Ctx() ctx: Context) {
     const from = ctx.from;
     if (!from) return;
+    if (await this.replyIfBlocked(ctx)) {
+      await this.safeAnswer(ctx, '', false);
+      return;
+    }
 
     const match = (ctx as Context & { match?: RegExpExecArray }).match;
     const orderId = parseInt(match?.[1] || '0', 10);
@@ -1131,6 +1181,82 @@ export class BotUpdate {
     }
     await this.safeAnswer(ctx, 'Loading...', false);
     await this.showAdminResellerOrders(ctx, resellerId, 'edit', page);
+  }
+
+  @Action(/^admin:blocked(?::(\d+))?$/)
+  async onAdminBlockedList(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const page = parseInt(match?.[1] || '0', 10) || 0;
+    await this.safeAnswer(ctx, 'Loading blocked users...', false);
+    await this.showAdminBlockedList(ctx, 'edit', page);
+  }
+
+  @Action(/^admin:block-picker(?::(\d+))?$/)
+  async onAdminBlockPicker(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const page = parseInt(match?.[1] || '0', 10) || 0;
+    await this.safeAnswer(ctx, 'Loading resellers...', false);
+    await this.showAdminBlockResellerPicker(ctx, 'edit', page);
+  }
+
+  @Action(/^admin:block-pick:(\d+)$/)
+  async onAdminBlockPick(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const resellerId = parseInt(match?.[1] || '0', 10);
+    if (!resellerId) {
+      await this.safeAnswer(ctx, 'Invalid reseller.', true);
+      return;
+    }
+    const blocked = await this.blockResellerAsAdmin(ctx, resellerId);
+    if (!blocked) return;
+    await this.showAdminBlockedList(ctx, 'edit', 0);
+  }
+
+  @Action(/^admin:reseller-block:(\d+)$/)
+  async onAdminResellerBlock(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const resellerId = parseInt(match?.[1] || '0', 10);
+    if (!resellerId) {
+      await this.safeAnswer(ctx, 'Invalid reseller.', true);
+      return;
+    }
+    const blocked = await this.blockResellerAsAdmin(ctx, resellerId);
+    if (!blocked) return;
+    await this.showAdminResellerOrders(ctx, resellerId, 'edit', 0);
+  }
+
+  @Action(/^admin:reseller-unblock:(\d+)$/)
+  async onAdminResellerUnblock(@Ctx() ctx: Context) {
+    if (!(await this.requireAdmin(ctx))) return;
+    const match = (ctx as Context & { match?: RegExpExecArray }).match;
+    const resellerId = parseInt(match?.[1] || '0', 10);
+    if (!resellerId) {
+      await this.safeAnswer(ctx, 'Invalid reseller.', true);
+      return;
+    }
+    const reseller = await this.resellers.unblockById(resellerId);
+    if (!reseller) {
+      await this.safeAnswer(ctx, 'Reseller not found.', true);
+      return;
+    }
+    this.logger.log(
+      `Reseller #${resellerId} (${reseller.fullName}) unblocked by admin ${ctx.from?.id}`,
+    );
+    await this.safeAnswer(
+      ctx,
+      `Unblocked ${reseller.fullName || reseller.telegramId}.`,
+      false,
+    );
+    const cbData = (ctx.callbackQuery as { data?: string } | undefined)?.data || '';
+    if (cbData.startsWith('admin:blocked')) {
+      await this.showAdminBlockedList(ctx, 'edit', 0);
+    } else {
+      await this.showAdminResellerOrders(ctx, resellerId, 'edit', 0);
+    }
   }
 
   @Action(/^admin:approval(?::(\d+))?$/)
@@ -2898,6 +3024,181 @@ export class BotUpdate {
     }
   }
 
+  private async showAdminBlockedList(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+    page = 0,
+  ): Promise<void> {
+    const pageSize = this.adminBlockedPageSize;
+    const totalCount = await this.resellers.countBlocked();
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const blocked = await this.resellers.findAllBlocked({
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const body = this.buildAdminBlockedListMessage(blocked, safePage, totalCount);
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminBlockedListKeyboard(blocked, safePage, totalPages),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, payload);
+      } else {
+        await ctx.reply(body, payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminBlockedList', err, { page: safePage, totalCount });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load the blocked list. Try again or use Prev/Next.',
+      );
+    }
+  }
+
+  private buildAdminBlockedListMessage(
+    blocked: Awaited<ReturnType<ResellersService['findAllBlocked']>>,
+    page: number,
+    totalCount: number,
+  ): string {
+    const pageSize = this.adminBlockedPageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const lines = [
+      '<b>🚫 Blocked users</b>',
+      '',
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> blocked`,
+    ];
+    if (blocked.length === 0) {
+      lines.push('', '<i>No blocked users.</i>');
+      return lines.join('\n');
+    }
+    const baseIndex = page * pageSize;
+    blocked.forEach((r, idx) => {
+      const name = this.escapeHtml((r.fullName || 'Unknown').slice(0, 40));
+      const phone = this.escapeHtml(this.formatPhone(r.phoneNumber));
+      lines.push('');
+      lines.push(
+        `<b>${baseIndex + idx + 1}.</b> ${name} · ${phone}`,
+      );
+      lines.push(`   ID: <code>${this.escapeHtml(r.telegramId)}</code>`);
+      if (r.blockReason) {
+        lines.push(`   Reason: ${this.escapeHtml(r.blockReason.slice(0, 120))}`);
+      }
+    });
+    lines.push('', '<i>Tap a name below to unblock.</i>');
+    return lines.join('\n');
+  }
+
+  private adminBlockedListKeyboard(
+    blocked: Awaited<ReturnType<ResellersService['findAllBlocked']>>,
+    page: number,
+    totalPages: number,
+  ) {
+    const rows: InlineKeyboardButton[][] = blocked.map((r) => [
+      Markup.button.callback(
+        `✓ Unblock ${(r.fullName || r.telegramId).slice(0, 24)}`,
+        `admin:reseller-unblock:${r.id}`,
+      ),
+    ]);
+    const nav = this.buildPaginationButtons(
+      (p) => (p <= 0 ? 'admin:blocked' : `admin:blocked:${p}`),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+    rows.push([Markup.button.callback('➕ Block reseller', 'admin:block-picker')]);
+    rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
+  private async showAdminBlockResellerPicker(
+    ctx: Context,
+    mode: 'reply' | 'edit',
+    page = 0,
+  ): Promise<void> {
+    const pageSize = this.adminBlockedPageSize;
+    const totalCount = await this.resellers.countRegisteredNotBlocked();
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const safePage = Math.min(Math.max(0, page), totalPages - 1);
+    const resellers = await this.resellers.findRegisteredNotBlocked({
+      limit: pageSize,
+      offset: safePage * pageSize,
+    });
+    const body = this.buildAdminBlockPickerMessage(resellers, safePage, totalCount);
+    const payload = {
+      parse_mode: 'HTML' as const,
+      ...this.adminBlockPickerKeyboard(resellers, safePage, totalPages),
+    };
+    try {
+      if (mode === 'edit') {
+        await ctx.editMessageText(body, payload);
+      } else {
+        await ctx.reply(body, payload);
+      }
+    } catch (err) {
+      if (this.isMessageNotModifiedError(err)) return;
+      this.fileLogger.logError('adminBlockPicker', err, { page: safePage, totalCount });
+      await this.notifyAdminViewFailed(
+        ctx,
+        'Could not load resellers. Try again or use Prev/Next.',
+      );
+    }
+  }
+
+  private buildAdminBlockPickerMessage(
+    resellers: Awaited<ReturnType<ResellersService['findRegisteredNotBlocked']>>,
+    page: number,
+    totalCount: number,
+  ): string {
+    const pageSize = this.adminBlockedPageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const lines = [
+      '<b>➕ Block a reseller</b>',
+      '',
+      `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> active reseller(s)`,
+      '',
+      '<i>Tap a name to block their Telegram ID from using the bot.</i>',
+    ];
+    if (resellers.length === 0) {
+      lines.push('', '<i>No active registered resellers to block.</i>');
+      return lines.join('\n');
+    }
+    const baseIndex = page * pageSize;
+    resellers.forEach((r, idx) => {
+      const name = this.escapeHtml((r.fullName || 'Unknown').slice(0, 40));
+      const phone = this.escapeHtml(this.formatPhone(r.phoneNumber));
+      lines.push('');
+      lines.push(
+        `<b>${baseIndex + idx + 1}.</b> ${name} · ${phone} · <code>${this.escapeHtml(r.telegramId)}</code>`,
+      );
+    });
+    return lines.join('\n');
+  }
+
+  private adminBlockPickerKeyboard(
+    resellers: Awaited<ReturnType<ResellersService['findRegisteredNotBlocked']>>,
+    page: number,
+    totalPages: number,
+  ) {
+    const rows: InlineKeyboardButton[][] = resellers.map((r) => [
+      Markup.button.callback(
+        `🚫 ${(r.fullName || r.telegramId).slice(0, 28)}`,
+        `admin:block-pick:${r.id}`,
+      ),
+    ]);
+    const nav = this.buildPaginationButtons(
+      (p) => (p <= 0 ? 'admin:block-picker' : `admin:block-picker:${p}`),
+      page,
+      totalPages,
+    );
+    if (nav.length > 0) rows.push(nav);
+    rows.push([Markup.button.callback('← Blocked list', 'admin:blocked')]);
+    rows.push([Markup.button.callback('← Back to settings', 'admin:settings')]);
+    return Markup.inlineKeyboard(rows);
+  }
+
   private async showAdminResellerOrders(
     ctx: Context,
     resellerId: number,
@@ -2924,7 +3225,12 @@ export class BotUpdate {
     );
     const payload = {
       parse_mode: 'HTML' as const,
-      ...this.adminResellerOrdersKeyboard(resellerId, safePage, totalPages),
+      ...this.adminResellerOrdersKeyboard(
+        resellerId,
+        safePage,
+        totalPages,
+        resellerInfo.isBlocked,
+      ),
     };
     try {
       if (mode === 'edit') {
@@ -2948,11 +3254,20 @@ export class BotUpdate {
 
   private async findResellerSummaryForAdmin(
     resellerId: number,
-  ): Promise<{ fullName: string; phoneNumber: string | null }> {
+  ): Promise<{
+    fullName: string;
+    phoneNumber: string | null;
+    telegramId: string;
+    isBlocked: boolean;
+    blockReason: string | null;
+  }> {
     const reseller = await this.resellers.findById(resellerId);
     return {
       fullName: reseller?.fullName || 'Unknown',
       phoneNumber: reseller?.phoneNumber ?? null,
+      telegramId: reseller?.telegramId ?? '',
+      isBlocked: reseller?.isBlocked() ?? false,
+      blockReason: reseller?.blockReason ?? null,
     };
   }
 
@@ -3012,7 +3327,13 @@ export class BotUpdate {
 
   private buildAdminResellerOrdersMessage(
     orders: Order[],
-    reseller: { fullName: string; phoneNumber: string | null },
+    reseller: {
+      fullName: string;
+      phoneNumber: string | null;
+      telegramId: string;
+      isBlocked: boolean;
+      blockReason: string | null;
+    },
     page: number,
     totalCount: number,
   ): string {
@@ -3023,9 +3344,18 @@ export class BotUpdate {
     const lines = [
       `<b>👤 ${name}</b>`,
       `Phone: ${phone}`,
+      `Telegram ID: <code>${this.escapeHtml(reseller.telegramId)}</code>`,
+    ];
+    if (reseller.isBlocked) {
+      lines.push('', '<b>🚫 BLOCKED</b>');
+      if (reseller.blockReason) {
+        lines.push(`Reason: ${this.escapeHtml(reseller.blockReason)}`);
+      }
+    }
+    lines.push(
       '',
       `Page <b>${page + 1}</b> of <b>${totalPages}</b> · <b>${totalCount}</b> order(s) total`,
-    ];
+    );
 
     if (orders.length === 0) {
       lines.push('', '<i>No orders for this reseller.</i>');
@@ -3045,8 +3375,17 @@ export class BotUpdate {
     resellerId: number,
     page: number,
     totalPages: number,
+    isBlocked: boolean,
   ) {
     const rows: InlineKeyboardButton[][] = [];
+    rows.push([
+      Markup.button.callback(
+        isBlocked ? '✓ Unblock user' : '🚫 Block user',
+        isBlocked
+          ? `admin:reseller-unblock:${resellerId}`
+          : `admin:reseller-block:${resellerId}`,
+      ),
+    ]);
     const nav = this.buildPaginationButtons(
       (p) =>
         p <= 0
@@ -3847,9 +4186,13 @@ export class BotUpdate {
     );
     const ceilingPct = Math.round((ceiling - 1) * 100);
     const adminList = await this.admins.findAll();
+    const blockedCount = await this.resellers.countBlocked();
 
     const lines = [
       '<b>⚙️ Settings</b>',
+      '',
+      '<b>Access control</b>',
+      `• Blocked users: <b>${blockedCount}</b>`,
       '',
       '<b>Pricing</b> (tap a button to edit)',
       '• Profit margin (dynamic; tier picked from Dubai product cost ETB only; delivery added after):',
@@ -3885,7 +4228,12 @@ export class BotUpdate {
 
   private async buildSettingsKeyboard() {
     const adminList = await this.admins.findAll();
+    const blockedCount = await this.resellers.countBlocked();
     const rows: ReturnType<typeof Markup.button.callback>[][] = [
+      [
+        Markup.button.callback(`🚫 Blocked (${blockedCount})`, 'admin:blocked'),
+        Markup.button.callback('➕ Block reseller', 'admin:block-picker'),
+      ],
       [
         Markup.button.callback('✏️ Fallback delivery', 'admin:edit:delivery'),
         Markup.button.callback('✏️ USD→ETB', 'admin:edit:rate'),
@@ -4604,6 +4952,36 @@ export class BotUpdate {
         `Implied factor <b>${factor.toFixed(4)}</b> (Dubai $${dubaiUsd.toFixed(2)} on Eth $${draft.ethUsd.toFixed(2)}).`,
       { parse_mode: 'HTML' },
     );
+  }
+
+  private async blockResellerAsAdmin(
+    ctx: Context,
+    resellerId: number,
+  ): Promise<Reseller | null> {
+    const existing = await this.resellers.findById(resellerId);
+    if (!existing) {
+      await this.safeAnswer(ctx, 'Reseller not found.', true);
+      return null;
+    }
+    if (await this.admins.isAdmin(existing.telegramId)) {
+      await this.safeAnswer(ctx, 'Cannot block an admin.', true);
+      return null;
+    }
+    const reseller = await this.resellers.blockById(resellerId);
+    if (!reseller) {
+      await this.safeAnswer(ctx, 'Reseller not found.', true);
+      return null;
+    }
+    this.orderDraft.clearDraft(Number(reseller.telegramId));
+    this.logger.log(
+      `Reseller #${resellerId} (${reseller.fullName}) blocked by admin ${ctx.from?.id}`,
+    );
+    await this.safeAnswer(
+      ctx,
+      `Blocked ${reseller.fullName || reseller.telegramId}.`,
+      false,
+    );
+    return reseller;
   }
 
   private async requireAdmin(ctx: Context): Promise<boolean> {
