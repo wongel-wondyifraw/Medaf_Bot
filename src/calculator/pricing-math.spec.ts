@@ -15,24 +15,24 @@ import {
 } from './pricing-math';
 
 describe('resolveDynamicMarginPercent', () => {
-  it('returns 30% below 5,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(4999), 30);
+  it('returns 35% below 5,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(4999), 35);
   });
 
-  it('returns 20% between 5,000 and 15,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(5000), 20);
-    assert.equal(resolveDynamicMarginPercent(15000), 20);
+  it('returns 25% between 5,000 and 15,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(5000), 25);
+    assert.equal(resolveDynamicMarginPercent(15000), 25);
   });
 
-  it('returns 15% above 15,000 ETB', () => {
-    assert.equal(resolveDynamicMarginPercent(15001), 15);
+  it('returns 20% above 15,000 ETB', () => {
+    assert.equal(resolveDynamicMarginPercent(15001), 20);
   });
 });
 
 describe('integer ETB helpers', () => {
   it('converts AED with the direct rate', () => {
     assert.equal(convertAedToEtb(66.88, 50), 3344);
-    assert.equal(applyMarginEtb(3344, 30), 4347);
+    assert.equal(applyMarginEtb(3344, 35), 4514);
   });
 });
 
@@ -79,11 +79,11 @@ describe('runAedDirectPricing', () => {
       quantity: 1,
     });
     assert.equal(r.dubaiCostEtb, 200);
-    assert.equal(r.marginPercent, 30);
-    assert.equal(r.sellEtb, 260);
-    assert.equal(r.profitEtb, 60);
-    assert.equal(r.unitEtbPerUnit, 1060);
-    assert.equal(r.totalEtb, 1060);
+    assert.equal(r.marginPercent, 35);
+    assert.equal(r.sellEtb, 270);
+    assert.equal(r.profitEtb, 70);
+    assert.equal(r.unitEtbPerUnit, 1070);
+    assert.equal(r.totalEtb, 1070);
   });
 
   it('matches the 66.88 AED trouser example at rate 50 with Trousers delivery', () => {
@@ -94,11 +94,11 @@ describe('runAedDirectPricing', () => {
       quantity: 1,
     });
     assert.equal(r.dubaiCostEtb, 3344);
-    assert.equal(r.marginPercent, 30);
-    assert.equal(r.sellEtb, 4347);
-    assert.equal(r.profitEtb, 1003);
-    assert.equal(r.unitEtbPerUnit, 4997);
-    assert.equal(r.totalEtb, 4997);
+    assert.equal(r.marginPercent, 35);
+    assert.equal(r.sellEtb, 4514);
+    assert.equal(r.profitEtb, 1170);
+    assert.equal(r.unitEtbPerUnit, 5164);
+    assert.equal(r.totalEtb, 5164);
   });
 
   it('multiplies the per-unit total by quantity last', () => {
@@ -108,8 +108,8 @@ describe('runAedDirectPricing', () => {
       aedToEtb: 200,
       quantity: 3,
     });
-    assert.equal(r.unitEtbPerUnit, 760);
-    assert.equal(r.totalEtb, 2280);
+    assert.equal(r.unitEtbPerUnit, 770);
+    assert.equal(r.totalEtb, 2310);
   });
 });
 
