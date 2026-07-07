@@ -3443,6 +3443,13 @@ export class BotUpdate {
     isBlocked: boolean,
   ) {
     const rows: InlineKeyboardButton[][] = [];
+
+    for (const o of orders) {
+      if (this.adminOrderHasActionButtons(o.status)) {
+        this.appendAdminOrderActionRows(rows, o, { includeUrlButtons: true });
+      }
+    }
+
     rows.push([
       Markup.button.callback(
         isBlocked ? '✓ Unblock user' : '🚫 Block user',
