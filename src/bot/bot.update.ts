@@ -3850,7 +3850,7 @@ export class BotUpdate {
     });
     const body = this.buildMyOrdersMessage(orders, safePage, totalCount);
     const keyboard = this.myOrdersKeyboard(safePage, totalPages);
-    const sticky = await this.stickyReplyKeyboardFor(from.id);
+    const hasPagination = totalPages > 1;
 
     try {
       if (mode === 'edit') {
@@ -3859,21 +3859,40 @@ export class BotUpdate {
           ...keyboard,
         });
       } else {
-        await ctx.reply(body, {
-          parse_mode: 'HTML',
-          ...keyboard,
-          ...sticky,
-        });
+        // Telegram only allows one reply_markup per message.
+        // InlineKeyboard (Prev/Next) and ReplyKeyboard (sticky bottom bar)
+        // both set reply_markup, so spreading both causes the last to win.
+        // When pagination exists, send inline keyboard only — Telegram
+        // automatically preserves the sticky reply keyboard from earlier messages.
+        if (hasPagination) {
+          await ctx.reply(body, {
+            parse_mode: 'HTML',
+            ...keyboard,
+          });
+        } else {
+          const sticky = await this.stickyReplyKeyboardFor(from.id);
+          await ctx.reply(body, {
+            parse_mode: 'HTML',
+            ...sticky,
+          });
+        }
       }
     } catch (err) {
       if (this.isMessageNotModifiedError(err)) return;
       this.fileLogger.logError('myOrders', err, { page: safePage, totalCount });
       if (mode === 'edit') {
-        await ctx.reply(body, {
-          parse_mode: 'HTML',
-          ...keyboard,
-          ...sticky,
-        });
+        if (hasPagination) {
+          await ctx.reply(body, {
+            parse_mode: 'HTML',
+            ...keyboard,
+          });
+        } else {
+          const sticky = await this.stickyReplyKeyboardFor(from.id);
+          await ctx.reply(body, {
+            parse_mode: 'HTML',
+            ...sticky,
+          });
+        }
       }
     }
   }
