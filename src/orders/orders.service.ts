@@ -238,10 +238,6 @@ export class OrdersService {
       .getMany();
   }
 
-  findPending(): Promise<Order[]> {
-    return this.findByStatus('pending');
-  }
-
   findByStatus(
     status: OrderStatus,
     opts?: { limit?: number; offset?: number },
@@ -256,20 +252,6 @@ export class OrdersService {
       .limit(limit)
       .offset(offset)
       .getMany();
-  }
-
-  findCreatedSince(
-    since: Date,
-    status?: OrderStatus,
-  ): Promise<Order[]> {
-    const qb = this.repo
-      .createQueryBuilder('o')
-      .leftJoinAndSelect('o.reseller', 'reseller')
-      .where('o.created_at > :since', { since });
-    if (status) {
-      qb.andWhere('o.status = :status', { status });
-    }
-    return qb.orderBy('o.created_at', 'ASC').getMany();
   }
 
   findCreatedSinceWithStatuses(since: Date, statuses: OrderStatus[]): Promise<Order[]> {

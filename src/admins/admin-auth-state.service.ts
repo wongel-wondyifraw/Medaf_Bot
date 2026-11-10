@@ -7,27 +7,16 @@ export type PendingAction =
   | 'edit-delivery'
   | 'edit-rate'
   | 'add-admin'
-  | 'edit-category-cost'
   | 'edit-category-fee'
   | 'edit-category-commission'
   | 'add-category'
-  | 'add-category-cost'
   | 'add-category-fee'
   | 'add-category-commission'
-  | 'edit-category-factor'
-  | 'edit-category-factor-low'
-  | 'edit-category-factor-avg'
-  | 'edit-category-factor-high'
   | 'edit-rate-aed'
   | 'edit-rate-aed-etb'
-  | 'edit-ceiling'
-  | 'edit-final-mult'
   | 'edit-bank-account'
   | 'adjust-price'
-  | 'reject-reason'
-  | 'addprice-link'
-  | 'addprice-eth-usd'
-  | 'addprice-aed';
+  | 'reject-reason';
 
 interface PendingState {
   action: PendingAction;

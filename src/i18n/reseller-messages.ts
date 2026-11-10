@@ -136,19 +136,8 @@ export const resellerMessages = {
         'Review the summary, then confirm or cancel.',
         'ማጠቃለያውን ይመልከቱ፣ ከዚያ ያረጋግጡ ወይም ይሰርዙ።',
       ),
-    priceInstructions: (compact?: boolean) => {
-      if (compact) {
-        return [
-          '1) SHEIN Location → UAE',
-          '2) Send AED (Dirham) price',
-          '3) Tap Place order',
-          '',
-          '1) Location → UAE',
-          '2) AED (ድርሃም) ዋጋ ይላኩ',
-          '3) Order ይጫኑ',
-        ].join('\n');
-      }
-      return [
+    priceInstructions: () =>
+      [
         '1. Set your SHEIN app Location to United Arab Emirates (UAE).',
         '2. Send the AED (Dirham) price you see on the app.',
         '3. After you review the price, tap the Place order button.',
@@ -156,8 +145,7 @@ export const resellerMessages = {
         '1. በSHEIN አፕሊኬሽን Location ወደ United Arab Emirates (UAE) ይቀይሩ።',
         '2. በአፑ ላይ የሚያዩትን AED (ድርሃም) ዋጋ ይላኩ ።',
         '3. ዋጋውን ከተመለከቱ በኋላ (Order) ሚለውን ቁልፍ ይጫኑ።',
-      ].join('\n');
-    },
+      ].join('\n'),
     preferencesInvalid: () =>
       bilingualHtml(
         'Please enter your preferences in one message (1–200 characters), e.g. <code>Size M, Black</code>.',
@@ -219,8 +207,6 @@ export const resellerMessages = {
         'Not on the custom quantity step.',
         'በብጁ ብዛት ደረጃ ላይ አይደሉም።',
       ),
-    notOnPriceStep: () =>
-      bilingual('Not on the price step.', 'በዋጋ ደረጃ ላይ አይደሉም።'),
     registerFirst: () =>
       bilingual(
         'Please /start the bot to register first.',
@@ -267,7 +253,6 @@ export const resellerMessages = {
       ),
     cannotCancel: () =>
       bilingual('This order cannot be cancelled.', 'ይህ ትዕዛዝ ሊሰረዝ አይችልም።'),
-    orderCancelled: () => bilingual('Order cancelled.', 'ትዕዛዝ ተሰርዟል።'),
     couldNotCancel: () =>
       bilingual(
         'Could not cancel your order. Please try again.',

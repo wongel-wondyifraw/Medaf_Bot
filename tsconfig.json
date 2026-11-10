@@ -21,7 +21,6 @@
   "exclude": [
     "node_modules", 
     "dist",
-    "src/common/proxy.ts",
     "**/*.spec.ts",
     "**/*.test.ts"
   ]

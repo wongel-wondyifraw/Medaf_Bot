@@ -1,10 +1,6 @@
-export type ScrapeProviderName = 'scraperapi' | 'retailed' | 'searchapi';
-
 export interface AppConfig {
   botToken: string;
   telegramApiRoot: string;
-  proxyUrl: string;
-  adminChatId: string;
   adminPassword: string;
   telegramUseWebhook: boolean;
   telegramWebhookUrl: string;
@@ -22,26 +18,11 @@ export interface AppConfig {
     logging: boolean;
     runMigrations: boolean;
   };
-  scrape: {
-    providerOrder: ScrapeProviderName[];
-    scraperapi: { key: string; mode: 'render' | 'premium' | 'ultra_premium'; country: string };
-    retailed: { key: string };
-    searchapi: { key: string; domain: string; currency: string };
-  };
   pricing: {
-    profitMarginPercent: number;
     usdToEtb: number | null;
     usdToAed: number | null;
     aedToEtb: number | null;
-    eurToEtb: number | null;
-    gbpToEtb: number | null;
     deliveryCostEtb: number;
-    ceilingMultiplier: number;
-    finalMultiplier: number;
-    defaultFactorLow: number;
-    defaultFactorAvg: number;
-    defaultFactorHigh: number;
-    obsBlend: number;
   };
   gemini: {
     apiKey: string;
@@ -69,11 +50,6 @@ function envNum(name: string, fallback: number | null): number | null {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
-function envNumAllowZero(name: string, fallback: number): number {
-  const v = parseFloat(process.env[name] || '');
-  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback;
-}
-
 function envBool(name: string, fallback = false): boolean {
   const v = (process.env[name] || '').trim().toLowerCase();
   if (v === 'true' || v === '1' || v === 'yes') return true;
@@ -82,21 +58,9 @@ function envBool(name: string, fallback = false): boolean {
 }
 
 export default function configuration(): AppConfig {
-  const allowed: ScrapeProviderName[] = ['scraperapi', 'retailed', 'searchapi'];
-  const order = envStr('PROVIDER_ORDER', 'scraperapi,retailed,searchapi')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter((n): n is ScrapeProviderName => allowed.includes(n as ScrapeProviderName));
-
-  const mode = envStr('SCRAPERAPI_MODE', 'render').toLowerCase();
-  const scraperapiMode: 'render' | 'premium' | 'ultra_premium' =
-    mode === 'ultra_premium' ? 'ultra_premium' : mode === 'premium' ? 'premium' : 'render';
-
   return {
     botToken: envStr('BOT_TOKEN'),
     telegramApiRoot: envStr('TELEGRAM_API_ROOT', 'https://api.telegram.org'),
-    proxyUrl: envStr('PROXY_URL'),
-    adminChatId: envStr('ADMIN_CHAT_ID'),
     adminPassword: envStr('ADMIN_PASSWORD'),
     telegramUseWebhook: envBool('TELEGRAM_USE_WEBHOOK', false),
     telegramWebhookUrl: envStr('TELEGRAM_WEBHOOK_URL'),
@@ -108,34 +72,11 @@ export default function configuration(): AppConfig {
       logging: envBool('TYPEORM_LOGGING'),
       runMigrations: envBool('TYPEORM_RUN_MIGRATIONS', true),
     },
-    scrape: {
-      providerOrder: order,
-      scraperapi: {
-        key: envStr('SCRAPERAPI_KEY'),
-        mode: scraperapiMode,
-        country: envStr('SCRAPERAPI_COUNTRY'),
-      },
-      retailed: { key: envStr('RETAILED_API_KEY') },
-      searchapi: {
-        key: envStr('SEARCHAPI_KEY'),
-        domain: envStr('SHEIN_DOMAIN'),
-        currency: envStr('SHEIN_CURRENCY'),
-      },
-    },
     pricing: {
-      profitMarginPercent: envNum('PROFIT_MARGIN', 30) ?? 30,
       usdToEtb: envNum('USD_TO_ETB', null),
       usdToAed: envNum('USD_TO_AED', 3.67),
       aedToEtb: envNum('AED_TO_ETB', null),
-      eurToEtb: envNum('EUR_TO_ETB', null),
-      gbpToEtb: envNum('GBP_TO_ETB', null),
       deliveryCostEtb: envNum('DELIVERY_COST_ETB', 500) ?? 500,
-      ceilingMultiplier: envNum('PRICING_CEILING_MULTIPLIER', 1.2) ?? 1.2,
-      finalMultiplier: envNum('PRICING_FINAL_MULTIPLIER', 1.1) ?? 1.1,
-      defaultFactorLow: envNum('PRICING_DEFAULT_FACTOR_LOW', 0.4) ?? 0.4,
-      defaultFactorAvg: envNum('PRICING_DEFAULT_FACTOR_AVG', 0.72) ?? 0.72,
-      defaultFactorHigh: envNum('PRICING_DEFAULT_FACTOR_HIGH', 1.15) ?? 1.15,
-      obsBlend: envNumAllowZero('PRICING_OBS_BLEND', 0.3),
     },
     gemini: {
       apiKey: envStr('GEMINI_API_KEY'),

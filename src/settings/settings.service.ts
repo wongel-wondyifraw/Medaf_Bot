@@ -6,13 +6,10 @@ import { AppConfig } from '../config/configuration';
 import { Setting } from './setting.entity';
 
 export const SETTING_KEYS = {
-  PROFIT_MARGIN: 'profit_margin_percent',
   DELIVERY_ETB: 'delivery_cost_etb',
   USD_TO_ETB: 'usd_to_etb',
   USD_TO_AED: 'usd_to_aed',
   AED_TO_ETB: 'aed_to_etb',
-  PRICING_CEILING_MULTIPLIER: 'pricing_ceiling_multiplier',
-  PRICING_FINAL_MULTIPLIER: 'pricing_final_multiplier',
   PAYMENT_BANK_ACCOUNT: 'payment_bank_account',
 } as const;
 
@@ -30,7 +27,6 @@ export class SettingsService implements OnModuleInit {
     const pricing = this.config.get('pricing', { infer: true });
     const paymentBankAccount = this.config.get('paymentBankAccount', { infer: true });
     const defaults: Array<[string, string | null]> = [
-      [SETTING_KEYS.PROFIT_MARGIN, String(pricing.profitMarginPercent)],
       [SETTING_KEYS.DELIVERY_ETB, String(pricing.deliveryCostEtb)],
       [SETTING_KEYS.USD_TO_ETB, pricing.usdToEtb != null ? String(pricing.usdToEtb) : null],
       [
@@ -38,14 +34,6 @@ export class SettingsService implements OnModuleInit {
         pricing.usdToAed != null ? String(pricing.usdToAed) : null,
       ],
       [SETTING_KEYS.AED_TO_ETB, pricing.aedToEtb != null ? String(pricing.aedToEtb) : null],
-      [
-        SETTING_KEYS.PRICING_CEILING_MULTIPLIER,
-        String(pricing.ceilingMultiplier),
-      ],
-      [
-        SETTING_KEYS.PRICING_FINAL_MULTIPLIER,
-        String(pricing.finalMultiplier),
-      ],
       [SETTING_KEYS.PAYMENT_BANK_ACCOUNT, paymentBankAccount || null],
     ];
 
@@ -79,12 +67,5 @@ export class SettingsService implements OnModuleInit {
     } else {
       await this.repo.save({ key, value });
     }
-  }
-
-  async getAll(): Promise<Record<string, string>> {
-    const rows = await this.repo.find();
-    const out: Record<string, string> = {};
-    for (const r of rows) out[r.key] = r.value;
-    return out;
   }
 }

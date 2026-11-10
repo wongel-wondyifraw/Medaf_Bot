@@ -7,7 +7,7 @@
  * when a message contains multiple URLs.
  */
 
-export type SheinLinkFlow = 'manual' | 'scrape';
+export type SheinLinkFlow = 'manual';
 
 export interface SheinLinkTypeMatch {
   typeId: string;
@@ -178,10 +178,4 @@ export function extractSheinUrlFromText(input: string): string | null {
       return false;
     }
   }) ?? null;
-}
-
-export function isKnownShareStyleLink(url: string): boolean {
-  const match = matchSheinLinkType(url);
-  if (!match) return false;
-  return match.typeId !== 'product-page' && match.typeId !== 'onelink';
 }

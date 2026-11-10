@@ -1,9 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  FactorReason,
-  FactorTier,
-} from '../calculator/pricing-math';
-import type { PriceConfidence } from '../observations/observations.service';
 
 const STATE_TTL_MS = 30 * 60 * 1000;
 
@@ -18,59 +13,23 @@ export interface OrderDraft {
   productId: string | null;
   link: string;
   productTitle: string;
-  sizes: string[];
-  colors: string[];
   /** Free-text size, color, and other variant preferences from the user. */
   preferencesText: string | null;
   selectedSize: string | null;
   selectedColor: string | null;
   quantity: number;
-  /** USD as derived from the scrape. Null when the scraper had no USD figure. */
-  scrapedUnitUsd: number | null;
-  /** USD as entered by the user (legacy). Null for AED-priced orders. */
-  userUnitUsd: number | null;
   /** AED as entered by the user from SHEIN UAE location. */
   userUnitAed: number | null;
   /** Per-unit ETB selling price (excludes delivery). */
   unitEtb: number;
-  /** Selling ETB (unit × qty), excludes delivery. */
-  sellingEtb: number;
   /** Final order total ETB (unit × qty + delivery). */
   totalEtb: number;
   /** Snapshot of the delivery fee used for this draft. */
   deliveryEtb: number;
-  /** Snapshot of the profit margin (%) used for this draft. */
-  marginPercent: number;
-  /** Snapshot of the USD→ETB rate used for this draft. */
-  rateUsed: number;
   /** Resolved category name (or null when no category matched). */
   categoryName: string | null;
-  /** Reverse-engineered Dubai unit cost in USD. */
-  dubaiUsd: number | null;
-  /** Reverse-engineered Dubai unit cost in AED. */
-  dubaiAed: number | null;
-  /** Factor applied to ethUsd to derive dubaiUsd. */
-  factorUsed: number | null;
-  /** Which tier won: low / high / avg. */
-  factorTier: FactorTier | null;
-  /** Why that tier was chosen. */
-  factorReason: FactorReason | null;
-  /** ETB reference anchor (ethUsd × USD→ETB). */
-  baseEtbRef: number | null;
-  /** AED anchor (ethUsd × USD→AED). */
-  baseAed: number | null;
-  /** Dubai product cost in ETB (margin base). */
-  dubaiCostEtb: number | null;
-  /** Sell price in ETB before delivery. */
-  sellEtb: number | null;
-  /** Profit portion in ETB. */
+  /** Profit portion per unit in ETB. */
   profitEtb: number | null;
-  /** USD→AED rate snapshot. */
-  usdToAed: number | null;
-  /** Confidence of the Dubai cost estimate. */
-  confidence: PriceConfidence | null;
-  /** Criteria / history triggers that influenced the estimate. */
-  triggers: string[];
   step: DraftStep;
   since: number;
 }
@@ -79,50 +38,16 @@ export interface CreateDraftInput {
   productId: string | null;
   link: string;
   productTitle: string;
-  sizes: string[];
-  colors: string[];
-  scrapedUnitUsd: number | null;
-  unitEtb: number;
-  sellingEtb: number;
   totalEtb: number;
   deliveryEtb: number;
-  marginPercent: number;
-  rateUsed: number;
   categoryName: string | null;
 }
 
 export interface UpdatePriceInput {
   userUnitAed: number;
-  userUnitUsd: number | null;
   unitEtb: number;
-  sellingEtb: number;
   totalEtb: number;
-  /**
-   * The margin (%) actually applied to compute the ETB amounts above. The
-   * draft's marginPercent snapshot is rewritten so downstream code keeps
-   * matching the user-facing math.
-   */
-  marginPercent: number;
-  /**
-   * The USD→ETB rate actually used at price-entry time. We refresh this from
-   * the `settings.usd_to_etb` row, so the snapshot may legitimately differ
-   * from the value captured at draft creation if the admin edited it in
-   * between.
-   */
-  rateUsed: number;
-  dubaiUsd: number;
-  dubaiAed: number;
-  factorUsed: number;
-  factorTier: FactorTier;
-  factorReason: FactorReason;
-  baseEtbRef: number;
-  baseAed: number;
-  dubaiCostEtb: number;
-  sellEtb: number;
   profitEtb: number;
-  usdToAed: number;
-  confidence: PriceConfidence;
-  triggers: string[];
 }
 
 @Injectable()
@@ -134,35 +59,16 @@ export class OrderDraftStateService {
       productId: input.productId,
       link: input.link,
       productTitle: input.productTitle,
-      sizes: input.sizes,
-      colors: input.colors,
       preferencesText: null,
       selectedSize: null,
       selectedColor: null,
       quantity: 1,
-      scrapedUnitUsd: input.scrapedUnitUsd,
-      userUnitUsd: null,
       userUnitAed: null,
-      unitEtb: input.unitEtb,
-      sellingEtb: input.sellingEtb,
+      unitEtb: 0,
       totalEtb: input.totalEtb,
       deliveryEtb: input.deliveryEtb,
-      marginPercent: input.marginPercent,
-      rateUsed: input.rateUsed,
       categoryName: input.categoryName,
-      dubaiUsd: null,
-      dubaiAed: null,
-      factorUsed: null,
-      factorTier: null,
-      factorReason: null,
-      baseEtbRef: null,
-      baseAed: null,
-      dubaiCostEtb: null,
-      sellEtb: null,
       profitEtb: null,
-      usdToAed: null,
-      confidence: null,
-      triggers: [],
       step: 'preferences',
       since: Date.now(),
     };
@@ -238,26 +144,10 @@ export class OrderDraftStateService {
   setUserPrice(userId: number, input: UpdatePriceInput): OrderDraft | null {
     const draft = this.getDraft(userId);
     if (!draft) return null;
-    draft.userUnitUsd = input.userUnitUsd;
     draft.userUnitAed = input.userUnitAed;
     draft.unitEtb = input.unitEtb;
-    draft.sellingEtb = input.sellingEtb;
     draft.totalEtb = input.totalEtb;
-    draft.marginPercent = input.marginPercent;
-    draft.rateUsed = input.rateUsed;
-    draft.dubaiUsd = input.dubaiUsd;
-    draft.dubaiAed = input.dubaiAed;
-    draft.factorUsed = input.factorUsed;
-    draft.factorTier = input.factorTier;
-    draft.factorReason = input.factorReason;
-    draft.baseEtbRef = input.baseEtbRef;
-    draft.baseAed = input.baseAed;
-    draft.dubaiCostEtb = input.dubaiCostEtb;
-    draft.sellEtb = input.sellEtb;
     draft.profitEtb = input.profitEtb;
-    draft.usdToAed = input.usdToAed;
-    draft.confidence = input.confidence;
-    draft.triggers = input.triggers;
     draft.step = 'confirm';
     draft.since = Date.now();
     return draft;

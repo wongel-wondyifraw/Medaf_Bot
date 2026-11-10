@@ -32,25 +32,3 @@ export const CATEGORY_THREE_FACTOR_SEED: Record<string, ThreeFactors> = {
   Underwear: { low: 0.45, avg: 0.9, high: 1.15 },
   Pijamas: { low: 0.35, avg: 0.68, high: 1.1 },
 };
-
-/** Maps category display name to env slug (PRICING_FACTOR_<SLUG>_LOW). */
-export function categoryNameToEnvSlug(name: string): string {
-  return name
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_|_$/g, '');
-}
-
-export function readEnvFactorOverride(
-  env: NodeJS.ProcessEnv,
-  categoryName: string | null,
-  tier: 'LOW' | 'AVG' | 'HIGH',
-): number | null {
-  if (!categoryName) return null;
-  const slug = categoryNameToEnvSlug(categoryName);
-  const key = `PRICING_FACTOR_${slug}_${tier}`;
-  const raw = (env[key] || '').trim();
-  if (!raw) return null;
-  const n = parseFloat(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}

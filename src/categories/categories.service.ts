@@ -15,15 +15,8 @@ import {
 } from './category-ai.shared';
 import { CategoryAiService } from './category-ai.service';
 import { CategoryLinkContext } from './category-link-context';
-import {
-  CATEGORY_THREE_FACTOR_SEED,
-  readEnvFactorOverride,
-  type ThreeFactors,
-} from './category-three-factors';
 import { CategoryGroqService } from './category-groq.service';
 import { Category } from './category.entity';
-
-export type { ThreeFactors };
 
 export type CategoryResolveSource =
   | 'gemini_match'
@@ -370,7 +363,6 @@ const SHOE_KEYWORDS: string[] = [
 ];
 
 const MEN_CONTEXT_REGEX = /\b(mens?|men's|man's|male|manfinity)\b/i;
-const WOMEN_CONTEXT_REGEX = /\b(womens?|women's|woman's|female|girls?|ladies|lady)\b/i;
 
 type CategoryMatch = { category: Category; priority: number; score: number };
 
@@ -619,163 +611,6 @@ export class CategoriesService {
     await this.repo.save(existing);
     this.logger.log(`Category "${name}" (#${existing.id}) costs cleared`);
     return existing;
-  }
-
-  async setDubaiFactor(
-    id: number | string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    existing.dubaiFactor = factor;
-    existing.dubaiFactorLow = factor;
-    await this.repo.save(existing);
-    this.logger.log(`Category #${id} (${existing.name}) dubai_factor set to ${factor}`);
-    return existing;
-  }
-
-  async setDubaiFactorByName(
-    name: string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findByName(name);
-    if (!existing) return null;
-    existing.dubaiFactor = factor;
-    existing.dubaiFactorLow = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category "${name}" (#${existing.id}) dubai_factor set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorLow(
-    id: number | string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    existing.dubaiFactorLow = factor;
-    existing.dubaiFactor = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category #${id} (${existing.name}) dubai_factor_low set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorLowByName(
-    name: string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findByName(name);
-    if (!existing) return null;
-    existing.dubaiFactorLow = factor;
-    existing.dubaiFactor = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category "${name}" (#${existing.id}) dubai_factor_low set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorAvg(
-    id: number | string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    existing.dubaiFactorAvg = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category #${id} (${existing.name}) dubai_factor_avg set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorAvgByName(
-    name: string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findByName(name);
-    if (!existing) return null;
-    existing.dubaiFactorAvg = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category "${name}" (#${existing.id}) dubai_factor_avg set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorHigh(
-    id: number | string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    existing.dubaiFactorHigh = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category #${id} (${existing.name}) dubai_factor_high set to ${factor}`,
-    );
-    return existing;
-  }
-
-  async setDubaiFactorHighByName(
-    name: string,
-    factor: number | null,
-  ): Promise<Category | null> {
-    const existing = await this.findByName(name);
-    if (!existing) return null;
-    existing.dubaiFactorHigh = factor;
-    await this.repo.save(existing);
-    this.logger.log(
-      `Category "${name}" (#${existing.id}) dubai_factor_high set to ${factor}`,
-    );
-    return existing;
-  }
-
-  /**
-   * Resolves low / avg / high factors for pricing.
-   * Priority: DB column → env override → seed table → global defaults.
-   */
-  async resolveThreeFactors(categoryName: string | null): Promise<ThreeFactors> {
-    const pricing = this.config.get('pricing', { infer: true });
-    const defaults: ThreeFactors = {
-      low: pricing.defaultFactorLow,
-      avg: pricing.defaultFactorAvg,
-      high: pricing.defaultFactorHigh,
-    };
-
-    const seed = categoryName ? CATEGORY_THREE_FACTOR_SEED[categoryName] : null;
-    let low = seed?.low ?? defaults.low;
-    let avg = seed?.avg ?? defaults.avg;
-    let high = seed?.high ?? defaults.high;
-
-    if (categoryName) {
-      const cat = await this.findByName(categoryName);
-      if (cat?.dubaiFactorLow != null && cat.dubaiFactorLow > 0) {
-        low = cat.dubaiFactorLow;
-      } else if (cat?.dubaiFactor != null && cat.dubaiFactor > 0) {
-        low = cat.dubaiFactor;
-      }
-      if (cat?.dubaiFactorAvg != null && cat.dubaiFactorAvg > 0) {
-        avg = cat.dubaiFactorAvg;
-      }
-      if (cat?.dubaiFactorHigh != null && cat.dubaiFactorHigh > 0) {
-        high = cat.dubaiFactorHigh;
-      }
-    }
-
-    const envLow = readEnvFactorOverride(process.env, categoryName, 'LOW');
-    const envAvg = readEnvFactorOverride(process.env, categoryName, 'AVG');
-    const envHigh = readEnvFactorOverride(process.env, categoryName, 'HIGH');
-
-    return {
-      low: envLow ?? low,
-      avg: envAvg ?? avg,
-      high: envHigh ?? high,
-    };
   }
 
   /**
